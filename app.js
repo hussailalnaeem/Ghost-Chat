@@ -7,6 +7,10 @@ import {
   validateRoomCode,
 } from './js/room-utils.js';
 
+const APP_CONFIG = {
+  coordinatorUrl: window.GHOSTCHAT_CONFIG?.coordinatorUrl || 'ws://localhost:8080',
+};
+
 const PEER_OPTS = {
   debug: 1,
   config: {
@@ -129,50 +133,40 @@ function ensureCoordinator() {
     return;
   }
 
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const candidatePorts = [8080, 8081, 8082, 8083];
+  const socket = new WebSocket(APP_CONFIG.coordinatorUrl);
+  state.socket = socket;
 
-  const tryConnect = (index) => {
-    if (index >= candidatePorts.length) {
-      showToast('Connection service unavailable.', 'error');
-      return;
+  socket.addEventListener('open', () => {
+    state.coordinatorReady = true;
+    sendCoordinator({ type: 'session.hello' });
+  });
+
+  socket.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload && payload.type === 'session.ack' && payload.sessionId) {
+        state.sessionId = payload.sessionId;
+      }
+      handleCoordinatorMessage(payload);
+    } catch (error) {
+      console.warn('[GhostChat] invalid coordinator payload', error);
     }
+  });
 
-    const port = candidatePorts[index];
-    const socket = new WebSocket(`${protocol}://${location.hostname}:${port}`);
-    state.socket = socket;
+  socket.addEventListener('close', () => {
+    state.coordinatorReady = false;
+    if (state.socket === socket) {
+      state.socket = null;
+    }
+    showToast('Connection service unavailable.', 'error');
+  });
 
-    socket.addEventListener('open', () => {
-      state.coordinatorReady = true;
-      sendCoordinator({ type: 'session.hello', sessionId: state.sessionId });
-    });
-
-    socket.addEventListener('message', (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        handleCoordinatorMessage(payload);
-      } catch (error) {
-        console.warn('[GhostChat] invalid coordinator payload', error);
-      }
-    });
-
-    socket.addEventListener('close', () => {
-      state.coordinatorReady = false;
-      if (state.socket === socket) {
-        state.socket = null;
-      }
-      tryConnect(index + 1);
-    });
-
-    socket.addEventListener('error', () => {
-      if (state.socket === socket) {
-        state.socket = null;
-      }
-      tryConnect(index + 1);
-    });
-  };
-
-  tryConnect(0);
+  socket.addEventListener('error', () => {
+    if (state.socket === socket) {
+      state.socket = null;
+    }
+    showToast('Connection service unavailable.', 'error');
+  });
 }
 
 function sendCoordinator(payload) {
@@ -180,7 +174,8 @@ function sendCoordinator(payload) {
     return;
   }
 
-  state.socket.send(JSON.stringify({ ...payload, sessionId: payload.sessionId || state.sessionId }));
+  const request = { ...payload, sessionId: payload.sessionId || state.sessionId };
+  state.socket.send(JSON.stringify(request));
 }
 
 function openHome() {
