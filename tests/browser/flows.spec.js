@@ -11,6 +11,16 @@ async function sendMessage(page, text) {
   await expect(page.locator('#chatMessages')).toContainText(text);
 }
 
+async function expectConcurrentConnectionSetup(page) {
+  const timings = await page.evaluate(() => window.__GHOSTCHAT_TIMINGS || []);
+  const peerStart = timings.find((item) => item.name === 'peerjs.initialization.start');
+  const sessionAck = timings.find((item) => item.name === 'coordinator.session.ack');
+  expect(peerStart).toBeTruthy();
+  expect(sessionAck).toBeTruthy();
+  expect(peerStart.at).toBeLessThan(sessionAck.at);
+  expect(timings.some((item) => item.name === 'coordinator.peer.register')).toBe(false);
+}
+
 test('private room: create, approve, chat both ways, and close', async ({ browser, baseURL }) => {
   const hostContext = await browser.newContext();
   const guestContext = await browser.newContext();
@@ -26,12 +36,14 @@ test('private room: create, approve, chat both ways, and close', async ({ browse
 
     await host.locator('#createRoomBtn').click();
     await expect(host.locator('#waiting-screen')).toBeVisible();
+    await expectConcurrentConnectionSetup(host);
     const roomCode = (await host.locator('#roomCodeValue').textContent()).trim();
     expect(roomCode).toMatch(/^[A-Z]{4}$/);
 
     await guest.locator('#joinCodeInput').fill(roomCode);
     await guest.locator('#joinBtn').click();
     await expect(guest.locator('#joining-screen')).toBeVisible();
+    await expectConcurrentConnectionSetup(guest);
     await expect(host.locator('#approvalModal')).toBeVisible();
     await expect(host.locator('#approvalMessage')).toHaveText('Another Ghost entered your room code.');
     await host.locator('#acceptJoinBtn').click();
@@ -92,6 +104,8 @@ test('matchmaking: pair two users, Next Ghost finds a third, End and Cancel clea
     await expect(second.locator('#chat-screen')).toBeVisible({ timeout: 45_000 });
     await expect(first.locator('#nextGhostBtn')).toBeVisible();
     await expect(second.locator('#nextGhostBtn')).toBeVisible();
+    await expectConcurrentConnectionSetup(first);
+    await expectConcurrentConnectionSetup(second);
     await expect(first.locator('#reportBtn')).toBeVisible();
 
     await first.locator('#msgInput').fill('typing now');

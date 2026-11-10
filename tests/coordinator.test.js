@@ -69,8 +69,6 @@ test('private room approval routes across coordinator instances and preserves re
   const guestPeerId = `ghost-guest-${crypto.randomUUID()}`;
 
   try {
-    await register(host.socket, hostPeerId);
-    await register(guest.socket, guestPeerId);
     const createRequestId = crypto.randomUUID();
     const create = await request(host.socket, 'room.create', { peerId: hostPeerId }, createRequestId);
     const duplicate = await request(host.socket, 'room.create', { peerId: hostPeerId }, createRequestId);
@@ -106,8 +104,6 @@ test('matchmaking reserves each peer once and assigns exactly one initiator acro
   const secondPeerId = `ghost-second-${crypto.randomUUID()}`;
 
   try {
-    await register(first.socket, firstPeerId);
-    await register(second.socket, secondPeerId);
     const firstSearch = await request(first.socket, 'match.search', { peerId: firstPeerId });
     assert.equal(firstSearch.type, 'match.queued');
     const firstMatch = receive(first.socket, (payload) => payload.type === 'match.found');
@@ -140,7 +136,6 @@ test('cancel removes a searcher before a later participant can match', async () 
   const peerIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()].map((id) => `ghost-${id}`);
 
   try {
-    await Promise.all([register(canceled.socket, peerIds[0]), register(waiting.socket, peerIds[1]), register(arriving.socket, peerIds[2])]);
     assert.equal((await request(canceled.socket, 'match.search', { peerId: peerIds[0] })).type, 'match.queued');
     assert.equal((await request(canceled.socket, 'match.cancel')).type, 'match.canceled');
     assert.equal((await request(waiting.socket, 'match.search', { peerId: peerIds[1] })).type, 'match.queued');
@@ -168,9 +163,6 @@ test('secure invitation authorizes entry without exposing room ownership to a fo
   const thirdPeerId = `ghost-invite-third-${crypto.randomUUID()}`;
 
   try {
-    await register(host.socket, hostPeerId);
-    await register(guest.socket, guestPeerId);
-    await register(third.socket, thirdPeerId);
     const room = await request(host.socket, 'room.create', { peerId: hostPeerId });
     assert.match(room.invitationToken, /^[A-Za-z0-9_-]{32}$/);
 
@@ -221,11 +213,6 @@ test('reports are match-bound, deduplicated, and store no transcript', async () 
   const peerIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()].map((id) => `ghost-report-${id}`);
 
   try {
-    await Promise.all([
-      register(reporter.socket, peerIds[0]),
-      register(partner.socket, peerIds[1]),
-      register(outsider.socket, peerIds[2]),
-    ]);
     await request(reporter.socket, 'match.search', { peerId: peerIds[0] });
     const reporterMatch = receive(reporter.socket, (payload) => payload.type === 'match.found');
     const partnerMatch = await request(partner.socket, 'match.search', { peerId: peerIds[1] });

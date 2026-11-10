@@ -63,12 +63,39 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
     await store.deliver(sessionId, payload);
   }
 
-  async function handleMessage(socket, sessionId, requestId, message, reply) {
+  async function handleMessage(socket, sessionId, requestId, message, sendResponse) {
+    const requestReceivedAt = Date.now();
+    const requestStartedAt = performance.now();
+    const storeOperations = [];
+    const measureStore = async (name, operation) => {
+      const startedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        storeOperations.push({ name, durationMs: performance.now() - startedAt });
+      }
+    };
+    const reply = (payload) => sendResponse({
+      ...payload,
+      serverTiming: {
+        receivedAt: requestReceivedAt,
+        completedAt: Date.now(),
+        durationMs: performance.now() - requestStartedAt,
+        storeOperations,
+      },
+    });
     const fail = (reason) => reply(response('error', requestId, { message: reason }));
-    const allowed = await store.rateLimit(sessionId, message.type, message.type.startsWith('room.') || message.type.startsWith('match.') ? 30 : 90, 60_000);
-    if (!allowed) return fail('Too many requests. Please wait a moment.');
+    const authorization = await measureStore('request.authorize', () => store.authorizeRequest(
+      sessionId,
+      message.type,
+      message.type.startsWith('room.') || message.type.startsWith('match.') ? 30 : 90,
+      60_000,
+    ));
+    if (!authorization.allowed) {
+      return fail(authorization.limited ? 'Too many requests. Please wait a moment.' : 'Session expired. Return home and try again.');
+    }
 
-    const session = await store.getSession(sessionId);
+    const session = authorization.session;
     if (!session) return fail('Session expired. Return home and try again.');
     if (message.sessionId && message.sessionId !== sessionId) return fail('Unauthorized session.');
 
@@ -76,20 +103,20 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       case 'peer.register': {
         if (!validPeerId(message.peerId)) return fail('Invalid PeerJS identity.');
         if (session.peerId && session.peerId !== message.peerId) return fail('A PeerJS identity is already registered for this session.');
-        if (!await store.registerPeer(sessionId, message.peerId)) return fail('Session expired. Return home and try again.');
+        if (!await measureStore('peer.register', () => store.registerPeer(sessionId, message.peerId))) return fail('Session expired. Return home and try again.');
         reply(response('peer.registered', requestId, { peerId: message.peerId }));
         return;
       }
 
       case 'room.create': {
-        if (!validPeerId(message.peerId) || session.peerId !== message.peerId) return fail('Register your PeerJS identity before creating a room.');
+        if (!validPeerId(message.peerId) || (session.peerId && session.peerId !== message.peerId)) return fail('Register your PeerJS identity before creating a room.');
         if (session.status !== 'connected') return fail('End your current chat before creating another room.');
         const invitationToken = randomToken();
         const invitationHash = hashToken(invitationToken);
         for (let attempt = 0; attempt < 40; attempt += 1) {
           const roomCode = Array.from({ length: 4 }, () => String.fromCharCode(65 + crypto.randomInt(26))).join('');
           const roomId = crypto.randomUUID();
-          const created = await store.createRoom({ sessionId, instanceId, peerId: session.peerId, roomCode, roomId, invitationHash, ttl: ROOM_TTL_SECONDS });
+          const created = await measureStore('room.create', () => store.createRoom({ sessionId, instanceId, peerId: message.peerId, roomCode, roomId, invitationHash, ttl: ROOM_TTL_SECONDS }));
           if (created) {
             reply(response('room.created', requestId, { roomCode, roomId, hostPeerId: session.peerId, invitationToken }));
             return;
@@ -101,20 +128,20 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       case 'room.join.request': {
         const roomCode = normalizeCode(message.roomCode);
         if (!roomCode) return fail('Enter a valid four-letter room code.');
-        if (!session.peerId) return fail('Register your PeerJS identity before joining a room.');
+        if (!validPeerId(message.peerId) || (session.peerId && session.peerId !== message.peerId)) return fail('Register your PeerJS identity before joining a room.');
         if (session.status !== 'connected') return fail('End your current chat before joining another room.');
         const suppliedToken = typeof message.invitationToken === 'string' ? message.invitationToken : '';
         if (suppliedToken && !/^[A-Za-z0-9_-]{32}$/.test(suppliedToken)) return fail('This invitation link is invalid or expired.');
         const joinRequestId = crypto.randomUUID();
         const authorization = suppliedToken ? randomToken() : '';
-        const result = await store.requestJoin({
+        const result = await measureStore('room.join.request', () => store.requestJoin({
           roomCode,
           guestSessionId: sessionId,
-          peerId: session.peerId,
+          peerId: message.peerId,
           requestId: joinRequestId,
           invitationHash: suppliedToken ? hashToken(suppliedToken) : '',
           authorization,
-        });
+        }));
         if (result.status === 'missing') return fail('Room not found.');
         if (result.status === 'full') return fail('Room is full.');
         if (result.status === 'busy') return fail('End your current chat before joining another room.');
@@ -157,7 +184,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
         const joinRequestId = String(message.joinRequestId || '');
         if (!roomCode || !joinRequestId) return fail('Join request is no longer available.');
         const authorization = randomToken();
-        const result = await store.acceptJoin({ roomCode, hostSessionId: sessionId, requestId: joinRequestId, authorization });
+        const result = await measureStore('room.join.accept', () => store.acceptJoin({ roomCode, hostSessionId: sessionId, requestId: joinRequestId, authorization }));
         if (result.status === 'unauthorized') return fail('You are not authorized to approve this room request.');
         if (result.status !== 'accepted') return fail('Join request expired.');
         await deliver(result.guestSessionId, {
@@ -178,7 +205,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
         const roomCode = normalizeCode(message.roomCode);
         const joinRequestId = String(message.joinRequestId || '');
         if (!roomCode || !joinRequestId) return fail('Join request is no longer available.');
-        const result = await store.declineJoin({ roomCode, hostSessionId: sessionId, requestId: joinRequestId });
+        const result = await measureStore('room.join.decline', () => store.declineJoin({ roomCode, hostSessionId: sessionId, requestId: joinRequestId }));
         if (result.status === 'unauthorized') return fail('You are not authorized to decline this room request.');
         if (result.status !== 'declined') return fail('Join request expired.');
         if (result.guestSessionId && result.guestInstanceId) {
@@ -191,7 +218,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       case 'room.close': {
         const roomCode = normalizeCode(message.roomCode);
         if (!roomCode) return fail('Invalid room code.');
-        const result = await store.closeRoom({ roomCode, hostSessionId: sessionId });
+        const result = await measureStore('room.close', () => store.closeRoom({ roomCode, hostSessionId: sessionId }));
         if (result.status === 'unauthorized') return fail('You are not authorized to close this room.');
         for (const target of [result.guestSessionId, result.pendingGuestSessionId]) {
           if (target) await deliver(target, { type: 'room.closed', eventId: crypto.randomUUID(), roomCode, reason: 'The host ended the room.' });
@@ -201,10 +228,10 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       }
 
       case 'match.search': {
-        if (!session.peerId) return fail('Register your PeerJS identity before searching.');
+        if (!validPeerId(message.peerId) || (session.peerId && session.peerId !== message.peerId)) return fail('Register your PeerJS identity before searching.');
         const matchId = crypto.randomUUID();
         const authorization = randomToken();
-        const result = await store.search({ sessionId, instanceId, peerId: session.peerId, matchId, authorization, ttl: MATCH_TTL_SECONDS });
+        const result = await measureStore('match.search', () => store.search({ sessionId, instanceId, peerId: message.peerId, matchId, authorization, ttl: MATCH_TTL_SECONDS }));
         if (result.status === 'unregistered') return fail('Register your PeerJS identity before searching.');
         if (result.status === 'already-matched') return fail('This session already has an active match.');
         if (result.status === 'busy') return fail('End your current room before searching for a Ghost.');
@@ -236,7 +263,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       }
 
       case 'match.cancel': {
-        const result = await store.cancelSearch(sessionId);
+        const result = await measureStore('match.cancel', () => store.cancelSearch(sessionId));
         reply(response('match.canceled', requestId, result));
         return;
       }
@@ -244,7 +271,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       case 'match.release': {
         const matchId = String(message.matchId || '');
         if (!matchId) return fail('Invalid match.');
-        const result = await store.releaseMatch({ matchId, sessionId });
+        const result = await measureStore('match.release', () => store.releaseMatch({ matchId, sessionId }));
         if (result.status === 'unauthorized') return fail('You are not authorized to end this match.');
         if (result.otherSessionId) {
           await deliver(result.otherSessionId, { type: 'match.ended', eventId: crypto.randomUUID(), matchId }, result.otherInstanceId);
@@ -265,7 +292,7 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
           reason,
           createdAt: Date.now(),
         };
-        const result = await store.submitReport({ report, sessionId, retentionSeconds: REPORT_RETENTION_SECONDS });
+        const result = await measureStore('report.submit', () => store.submitReport({ report, sessionId, retentionSeconds: REPORT_RETENTION_SECONDS }));
         if (result.status === 'missing') return fail('This chat is no longer available to report.');
         if (result.status === 'unauthorized') return fail('You are not a participant in this chat.');
         if (result.status === 'duplicate') return fail('You have already reported this chat.');
@@ -290,6 +317,8 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
     }
 
     const sessionId = crypto.randomUUID();
+    const connectionAcceptedAt = Date.now();
+    const sessionStartedAt = performance.now();
     let active = true;
     let lastPong = Date.now();
     const completed = new Map();
@@ -300,7 +329,15 @@ export function createCoordinatorService({ redisUrl = process.env.REDIS_URL, sto
       await ready;
       if (!active) return;
       await store.createSession({ sessionId, instanceId });
-      send(socket, { type: 'session.ack', sessionId });
+      send(socket, {
+        type: 'session.ack',
+        sessionId,
+        serverTiming: {
+          acceptedAt: connectionAcceptedAt,
+          acknowledgedAt: Date.now(),
+          sessionCreateDurationMs: performance.now() - sessionStartedAt,
+        },
+      });
     };
 
     start().catch((error) => {

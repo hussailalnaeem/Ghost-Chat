@@ -1,3 +1,5 @@
+import { recordTiming } from './timing.js';
+
 export function getCoordinatorUrl(location = window.location) {
   const url = new URL('/api/ws', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -23,6 +25,8 @@ export class CoordinatorClient {
     if (this.connectPromise) return this.connectPromise;
 
     this.closedByClient = false;
+    const connectStartedAt = performance.now();
+    recordTiming('coordinator.websocket.start', { url: this.url });
     let socket;
     try {
       socket = new this.WebSocketConstructor(this.url);
@@ -46,6 +50,10 @@ export class CoordinatorClient {
         socket.close();
       }, 8000);
 
+      socket.addEventListener('open', () => {
+        recordTiming('coordinator.websocket.open', { durationMs: performance.now() - connectStartedAt });
+      });
+
       socket.addEventListener('message', (event) => {
         let payload;
         try {
@@ -58,6 +66,10 @@ export class CoordinatorClient {
           settled = true;
           clearTimeout(timeout);
           this.sessionId = payload.sessionId;
+          recordTiming('coordinator.session.ack', {
+            durationMs: performance.now() - connectStartedAt,
+            serverTiming: payload.serverTiming || null,
+          });
           resolve(payload.sessionId);
           return;
         }
@@ -70,6 +82,10 @@ export class CoordinatorClient {
         if (pending) {
           clearTimeout(pending.timeout);
           this.pending.delete(payload.requestId);
+          recordTiming(`coordinator.${pending.type}`, {
+            durationMs: performance.now() - pending.startedAt,
+            serverTiming: payload.serverTiming || null,
+          });
           if (payload.type === 'error') pending.reject(new Error(payload.message || 'The request failed.'));
           else pending.resolve(payload);
           return;
@@ -106,12 +122,13 @@ export class CoordinatorClient {
       throw new Error('The coordination service is not connected.');
     }
     const requestId = crypto.randomUUID();
+    const requestStartedAt = performance.now();
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error('The request timed out. Please try again.'));
       }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timeout });
+      this.pending.set(requestId, { resolve, reject, timeout, type, startedAt: requestStartedAt });
       this.socket.send(JSON.stringify({ type, requestId, ...fields }));
     });
   }

@@ -73,6 +73,10 @@ test('coordinator binds room authority to the accepting socket session', async (
     assert.equal(created.type, 'room.created');
     assert.match(created.roomCode, /^[A-Z]{4}$/);
 
+    const changedPeer = await request(clientA, 'room.create', { peerId: `replacement-${crypto.randomUUID()}` });
+    assert.equal(changedPeer.type, 'error');
+    assert.equal(changedPeer.message, 'Register your PeerJS identity before creating a room.');
+
     const spoofedClose = await request(clientB, 'room.close', { sessionId: ackA.sessionId, roomCode: created.roomCode });
     assert.equal(spoofedClose.type, 'error');
     assert.equal(spoofedClose.message, 'Unauthorized session.');
