@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-labelledby="title desc">
+  <title id="title">GhostChat logo</title>
+  <desc id="desc">A minimalist ghost symbol in violet.</desc>
+  <defs>
+    <linearGradient id="ghostGradient" x1="0" x2="1">
+      <stop offset="0%" stop-color="#d9ccff"/>
+      <stop offset="100%" stop-color="#9a7cff"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="104" height="104" rx="26" fill="#12141d"/>
+  <path d="M36 81c0-22 14-35 24-35s24 13 24 35v4H36v-4zm12-29c0-8 6-14 12-14s12 6 12 14-6 14-12 14-12-6-12-14zm-12 28a20 20 0 0 1 18-19 20 20 0 0 1 18 19v6H36v-6z" fill="url(#ghostGradient)"/>
+  <circle cx="48" cy="49" r="4" fill="#0d0d12"/>
+  <circle cx="72" cy="49" r="4" fill="#0d0d12"/>
+</svg>

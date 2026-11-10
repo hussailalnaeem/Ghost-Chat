@@ -5,71 +5,171 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:;">
+    <meta name="theme-color" content="#0b0d14">
     <title>GhostChat — P2P ephemeral chat</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <link rel="stylesheet" href="styles.css">
     <script defer src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <script defer src="app.js"></script>
+    <script type="module" defer src="app.js"></script>
   </head>
   <body>
     <main id="app">
-      <section data-state="LANDING" hidden>
-        <h1>GhostChat</h1>
-        <p class="helper-text">Anyone with the link can join. Share carefully.</p>
-        <label for="roomInput">Room code</label>
-        <div class="row">
-          <input id="roomInput" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Room code" placeholder="room-name">
-          <button id="joinBtn" type="button">Create / Join</button>
-        </div>
-        <p id="landingError" role="alert" hidden></p>
-      </section>
-
-      <section data-state="CLAIMING_ID" hidden>
-        <div class="spinner" aria-hidden="true"></div>
-        <h2>Setting up your room…</h2>
-      </section>
-
-      <section data-state="HOST_WAITING" hidden>
-        <div class="status-line"><span class="status-dot connecting"></span>Room open</div>
-        <p class="eyebrow">YOUR ROOM CODE</p>
-        <code id="roomDisplay"></code>
-        <button id="copyBtn" type="button">Copy link</button>
-        <p>Waiting for a peer…</p>
-      </section>
-
-      <section data-state="GUEST_CONNECTING" hidden>
-        <div class="spinner" aria-hidden="true"></div>
-        <h2>Connecting to host…</h2>
-        <button id="cancelBtn" type="button">Cancel</button>
-      </section>
-
-      <section data-state="CONNECTED" hidden>
-        <div class="chat-header">
-          <div class="header-left">
-            <span id="statusDot" class="status-dot connected" aria-label="Connected"></span>
-            <code id="connectedRoom"></code>
+      <section id="home-screen" data-state="HOME" hidden>
+        <header class="topbar">
+          <div class="brand">
+            <img src="assets/logo.svg" alt="GhostChat logo" width="34" height="34">
+            <span class="brand-word">GhostChat</span>
           </div>
-          <button id="leaveBtn" type="button">Leave</button>
-        </div>
-        <div id="messages" role="log" aria-live="polite" aria-label="Messages"></div>
-        <div id="sentinel" aria-hidden="true"></div>
-        <div class="composer row">
-          <input id="msgInput" maxlength="2000" autocomplete="off" spellcheck="false" aria-label="Message" placeholder="Type a message…">
-          <button id="sendBtn" type="button" disabled>Send</button>
+          <button id="privacyBtn" class="secondary small" type="button">Privacy</button>
+        </header>
+
+        <div class="hero-layout">
+          <div class="hero-copy">
+            <p class="eyebrow">ANONYMOUS • TEMPORARY • DIRECT</p>
+            <h1>A conversation without an identity.</h1>
+            <p class="lead">Create a temporary room, invite someone, and chat without signing up.</p>
+            <ul class="feature-list">
+              <li>No accounts</li>
+              <li>No chat history stored by GhostChat</li>
+              <li>Real-time encrypted communication</li>
+            </ul>
+          </div>
+
+          <div class="card action-card">
+            <div class="section-heading">
+              <h2>Start a conversation</h2>
+              <p>Create a private room or join an existing one.</p>
+            </div>
+
+            <button id="createRoomBtn" class="primary action" type="button">Create Room</button>
+
+            <div class="divider"><span>OR JOIN A ROOM</span></div>
+
+            <label for="joinCodeInput">Room code</label>
+            <div class="stack">
+              <input id="joinCodeInput" type="text" maxlength="20" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-EFGH-JKLM" aria-describedby="joinError">
+              <button id="joinBtn" class="secondary action" type="button">Join Room</button>
+            </div>
+            <p id="joinError" class="inline-error" role="alert" aria-live="polite"></p>
+            <p class="hint">Get the room code from the person who created the chat.</p>
+          </div>
         </div>
       </section>
 
-      <section data-state="PEER_LEFT" hidden>
-        <span class="status-dot disconnected" aria-hidden="true"></span>
-        <h2>Peer disconnected.</h2>
-        <button id="newChatBtn" type="button">New chat</button>
+      <section id="creating-screen" data-state="CREATING" hidden>
+        <div class="center-shell">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2>Creating your room…</h2>
+          <p class="subtle">Claiming a private PeerJS room for this conversation.</p>
+        </div>
       </section>
 
-      <section data-state="ERROR" hidden>
-        <span class="status-dot disconnected" aria-hidden="true"></span>
-        <p id="errorMsg" role="alert"></p>
-        <button id="retryBtn" type="button">Retry</button>
-        <button id="homeBtn" type="button">Home</button>
+      <section id="waiting-screen" data-state="WAITING" hidden>
+        <header class="chat-topbar compact">
+          <div class="brand mini">
+            <img src="assets/logo.svg" alt="GhostChat logo" width="28" height="28">
+            <span>GhostChat</span>
+          </div>
+          <div class="live-status"><span class="status-dot waiting"></span>Waiting</div>
+          <button id="waitingLeaveBtn" class="secondary small" type="button">End Room</button>
+        </header>
+
+        <div class="waiting-body">
+          <div class="ghost-badge" aria-hidden="true">
+            <img src="assets/logo.svg" alt="" width="64" height="64">
+          </div>
+          <h2>Waiting for another Ghost…</h2>
+          <p class="subtle">Share your room code or invitation link to start chatting.</p>
+
+          <div class="code-card">
+            <label>YOUR ROOM CODE</label>
+            <div id="roomCodeValue" class="room-code">ABCD-EFGH-JKLM</div>
+            <div class="button-row small-gap">
+              <button id="copyCodeBtn" class="primary" type="button">Copy Code</button>
+              <button id="copyLinkBtn" class="secondary" type="button">Copy Link</button>
+              <button id="shareLinkBtn" class="secondary" type="button">Share</button>
+            </div>
+          </div>
+
+          <p class="waiting-note">Only one other person can join this room.</p>
+          <p class="waiting-note muted">Keep this tab open while waiting.</p>
+        </div>
+      </section>
+
+      <section id="joining-screen" data-state="JOINING" hidden>
+        <div class="center-shell">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2>Connecting…</h2>
+          <p class="subtle">Attempting to reach the host and establish the secure chat.</p>
+          <button id="cancelJoinBtn" class="secondary small" type="button">Cancel</button>
+        </div>
+      </section>
+
+      <section id="handshaking-screen" data-state="HANDSHAKING" hidden>
+        <div class="center-shell">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2>Secure handshake…</h2>
+          <p class="subtle">Verifying the room and waiting for acceptance.</p>
+        </div>
+      </section>
+
+      <section id="chat-screen" data-state="CONNECTED" hidden>
+        <header class="chat-topbar">
+          <div class="brand mini">
+            <img src="assets/logo.svg" alt="GhostChat logo" width="28" height="28">
+            <span>GhostChat</span>
+          </div>
+          <div class="live-status"><span id="statusDot" class="status-dot connected"></span><span id="statusLabel">Connected</span></div>
+          <button id="endChatBtn" class="secondary small" type="button">End Chat</button>
+        </header>
+
+        <div class="chat-shell">
+          <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-label="Messages"></div>
+        </div>
+
+        <div class="composer-row">
+          <textarea id="msgInput" rows="1" maxlength="2000" placeholder="Write a message..." aria-label="Message composer"></textarea>
+          <button id="sendBtn" class="primary" type="button" disabled>Send</button>
+        </div>
+      </section>
+
+      <section id="lost-screen" data-state="CONNECTION_LOST" hidden>
+        <div class="center-shell narrow">
+          <div class="alert-icon">!</div>
+          <h2>Connection lost</h2>
+          <p class="subtle">The conversation ended unexpectedly. Start a new room or return home.</p>
+          <div class="button-row">
+            <button id="newChatFromLostBtn" class="primary" type="button">Start New Chat</button>
+            <button id="homeFromLostBtn" class="secondary" type="button">Home</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="ended-screen" data-state="ENDED" hidden>
+        <div class="center-shell narrow">
+          <div class="ghost-badge small" aria-hidden="true"><img src="assets/logo.svg" alt="" width="56" height="56"></div>
+          <h2>This conversation has ended.</h2>
+          <p class="subtle">Your chat has been cleared from this app.</p>
+          <div class="button-row">
+            <button id="startNewChatBtn" class="primary" type="button">Start New Chat</button>
+            <button id="homeFromEndedBtn" class="secondary" type="button">Back to Home</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="error-screen" data-state="ERROR" hidden>
+        <div class="center-shell narrow">
+          <div class="alert-icon">!</div>
+          <h2>Could not connect</h2>
+          <p id="errorMessage" class="subtle" role="alert"></p>
+          <div class="button-row">
+            <button id="retryBtn" class="primary" type="button">Try Again</button>
+            <button id="homeFromErrorBtn" class="secondary" type="button">Back to Home</button>
+          </div>
+        </div>
       </section>
     </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>
