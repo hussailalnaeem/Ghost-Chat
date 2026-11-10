@@ -1,52 +1,61 @@
 # GhostChat V2
 
-GhostChat is a lightweight anonymous peer-to-peer chat app built with vanilla HTML, CSS, JavaScript, PeerJS, and a minimal coordination backend. The V2 upgrade moves the private-room system to a secure four-letter code model and adds a real matchmaking queue for anonymous stranger chats.
+GhostChat is a static HTML/CSS/Vanilla JavaScript application. PeerJS handles signaling, the browser-to-browser chat uses WebRTC data channels, and a short-lived coordinator manages rooms and matches. Ordinary messages are never sent to or stored by the coordinator.
 
-## What is implemented
-- Four-letter private room codes using secure random generation
-- Private room creation and host approval flow
-- Join-request coordination through a WebSocket backend
-- Anonymous stranger matching using a temporary in-memory queue
-- WebRTC data-channel chat for both private and random sessions
-- Message cleanup on session end and safe browser-only storage
-- Node-based automated tests for room code logic and invitation parsing
+## Local Development
 
-## Local development
-1. Install dependencies:
-   `npm install`
-2. Start the coordination server:
-   `npm run start`
-3. In a second terminal, serve the frontend:
-   `python -m http.server 8000`
-4. Open: `http://localhost:8000/`
+```powershell
+npm install
+npm start
+```
 
-## Required runtime notes
-- The frontend is static HTML/CSS/JS.
-- The coordination backend must remain running on port 8080 for private room creation, guest approval, and matchmaking.
-- A local browser environment is enough for development. The app is intentionally minimal and does not rely on a database or persistent chat storage.
+Open `http://localhost:8787`. The local runner serves the frontend and `/api/ws` from the same origin and uses in-memory coordination. It does not need a second terminal or a manually started backend. `PORT` may be set for local development only.
 
-## Testing
-Run:
+## Vercel Deployment
 
-`npm test`
+1. Import this GitHub repository as one Vercel project. Keep the framework preset as **Other**; no build command or custom output directory is required for the static root files.
+2. Enable **Fluid Compute** for the project. Vercel maps `api/ws.js` to `/api/ws` and supports WebSocket upgrades for Node.js Functions.
+3. Add the **Redis Cloud** integration from Vercel Marketplace to this project. Configure its Redis connection URI as the server-only `REDIS_URL` environment variable in the Vercel environments you deploy. If the integration provisions a differently named variable, map its URI to `REDIS_URL` in the project settings.
+4. Redeploy, then check `/api/health`. It returns `ready` only after a Redis `PING` succeeds. The WebSocket endpoint returns a clear service error if Redis is not configured.
 
-The project currently includes room code generation, normalization, validation, and invitation parsing tests.
+No production port, frontend URL, or separate backend deployment is required. The browser builds `ws(s)://<current-origin>/api/ws`; there are no production connections to localhost or port probing. No custom `vercel.json` rewrite is needed, so `/api/ws` is not rewritten to the static page.
 
-## Privacy and security
-- No accounts, public profiles, or stored chat transcripts are required.
-- Messages remain browser-memory only while the active WebRTC session is running.
-- The coordinator only manages temporary room state and matchmaking metadata; it does not relay normal message content.
-- PeerJS signaling and WebRTC connectivity may still be blocked by restrictive enterprise firewalls or limited NAT setups.
+Redis holds only expiring sessions, room/match reservations, queue state, rate counters, and event-routing metadata. Redis Pub/Sub routes events between Function instances; it has at-most-once delivery semantics, so clients also use request IDs, bounded waits, and disconnect cleanup. WebRTC text messages do not pass through Redis.
 
-## Deployment
-This project expects a static frontend plus a long-lived coordination server. In local development, the frontend is served from Python and the coordinator runs via Node on port 8080.
+Vercel bills WebSocket Function duration and data transfer according to the project's plan. Redis Cloud has its own plan and usage charges; cost depends on the selected Redis Cloud tier and usage. No Redis credentials are included in this repository.
 
-For production:
-- Frontend: static host such as Vercel or Netlify
-- Coordinator: Node.js server on a host that supports long-lived WebSocket connections
-- TURN: optional; privacy-sensitive stranger matching may require relaying if direct WebRTC connections are blocked
+## Configuration
 
-## Known limitations
-- The coordinator is intentionally in-memory and is not horizontally scaled across multiple servers.
-- Public stranger matching remains subject to WebRTC and TURN availability in the deployment environment.
-- This is a minimal V2 implementation rather than a fully audited large-scale production system.
+`.env.example` contains only consumed settings:
+
+- `PORT`: local runner only; defaults to `8787`. Vercel manages Function networking.
+- `REDIS_URL`: required server-side in Vercel. Provision it from the project's Redis Cloud integration; never expose or commit it.
+- `ALLOWED_ORIGINS`: optional comma-separated additional origins. The request's own origin is accepted automatically.
+- `REPORT_ADMIN_TOKEN`: optional high-entropy server secret. Without it, report submission is explicitly unavailable.
+
+## Tests
+
+```powershell
+npm test
+npm run test:browser
+```
+
+`npm test` runs room utilities, session authorization, private-room/matchmaking protocol tests, and simulated two-instance routing with a shared in-memory test store. The Redis-backed two-instance test runs only when `REDIS_URL` is available; it is skipped otherwise.
+
+`npm run test:browser` launches Microsoft Edge through Playwright and starts a fresh local same-origin app server. It uses independent browser contexts to test manual private-room approval, secure invitation auto-join, bidirectional messages, stranger matchmaking, Next Ghost, End Chat, Cancel Search, and absence of an unsolicited boot-time WebSocket.
+
+## Security and Privacy
+
+- Session IDs are generated by the coordinator and bound to the accepted socket. Clients do not establish ownership with a supplied ID.
+- PeerJS identities are registered once per active coordinator session and reused for the assigned match. The server selects one initiator.
+- Manual room codes require approval. Copy Link uses a random 192-bit token in the URL fragment; only its SHA-256 hash is stored with the expiring room. Valid links authorize one guest slot; invalid/expired links do not fall back to manual approval.
+- Room creation, peer registration, approval, closure, queueing, and match release are authorized against server-owned state. Requests have unique IDs, limits, and bounded timeouts.
+- The app contains no camera, microphone, geolocation, notification, Bluetooth, USB, or device enumeration calls. Its coordinator request is same-origin; it does not probe or contact a visitor's LAN services.
+- PeerJS signaling and STUN remain third-party network services. Direct WebRTC may expose network addressing information to the remote peer; no TURN relay is configured, so restrictive NAT/firewall networks may fail.
+- Stranger participants can submit one reason-only report per match. Reports omit message content and expire after 14 days. When `REPORT_ADMIN_TOKEN` is configured, moderators can list reports with `GET /api/reports` and remove one with `DELETE /api/reports?id=<report-id>` using `Authorization: Bearer <token>`.
+
+## Verification Status
+
+Local Edge browser flows and the in-memory coordinator integration suite have been executed. A Vercel deployment, Redis Cloud connection, Redis-backed cross-instance test, and fresh-profile production Local Network Access permission check were not available in this workspace and are not claimed as verified. Redis configuration is required before public room/match coordination works.
+
+Typing indicators, report submission, and the authenticated report-review API are implemented. Optional sounds are not implemented. Automatic coordinator resumption after a Vercel Function disconnect is not implemented: the disconnect is surfaced while an established direct chat is kept alive, and a new room or match requires retrying. Reports are unavailable until an operator configures both Redis and `REPORT_ADMIN_TOKEN`.

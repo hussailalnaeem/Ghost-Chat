@@ -3,17 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:;">
     <meta name="theme-color" content="#0b0d14">
     <title>GhostChat — Anonymous P2P Chat</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <link rel="stylesheet" href="styles.css">
-    <script>
-      window.GHOSTCHAT_CONFIG = window.GHOSTCHAT_CONFIG || {
-        coordinatorUrl: 'ws://localhost:8080'
-      };
-    </script>
+    <script src="js/security-policy.js"></script>
     <script defer src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script type="module" defer src="app.js"></script>
   </head>
@@ -137,11 +131,14 @@
             <span>GhostChat</span>
           </div>
           <div class="live-status"><span id="statusDot" class="status-dot connected"></span><span id="statusLabel">Connected</span></div>
+          <button id="reportBtn" class="secondary small" type="button" hidden>Report</button>
+          <button id="nextGhostBtn" class="secondary small" type="button" hidden>Next Ghost</button>
           <button id="endChatBtn" class="secondary small" type="button">End Chat</button>
         </header>
 
         <div class="chat-shell">
           <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-label="Messages"></div>
+          <p id="typingIndicator" class="typing-indicator" hidden>The other Ghost is typing…</p>
         </div>
 
         <div class="composer-row">
@@ -154,7 +151,7 @@
         <div class="center-shell narrow">
           <div class="alert-icon">!</div>
           <h2>Connection lost</h2>
-          <p class="subtle">The conversation ended unexpectedly. Start a new room or return home.</p>
+          <p id="lostMessage" class="subtle">The conversation ended unexpectedly. Start a new room or return home.</p>
           <div class="button-row">
             <button id="newChatFromLostBtn" class="primary" type="button">Start New Chat</button>
             <button id="homeFromLostBtn" class="secondary" type="button">Home</button>
@@ -186,6 +183,26 @@
         </div>
       </section>
     </main>
+
+    <div id="reportModal" class="approval-modal report-modal" role="dialog" aria-modal="true" aria-labelledby="reportTitle" hidden>
+      <form class="approval-card report-card">
+        <p class="eyebrow small">REPORT CHAT</p>
+        <h3 id="reportTitle">What happened?</h3>
+        <label for="reportReason">Reason</label>
+        <select id="reportReason">
+          <option value="harassment">Harassment</option>
+          <option value="spam">Spam</option>
+          <option value="threats">Threats</option>
+          <option value="inappropriate">Inappropriate content</option>
+          <option value="other">Other</option>
+        </select>
+        <p id="reportError" class="inline-error" role="alert" aria-live="polite"></p>
+        <div class="button-row">
+          <button id="submitReportBtn" class="primary" type="button">Submit Report</button>
+          <button id="cancelReportBtn" class="secondary" type="button">Cancel</button>
+        </div>
+      </form>
+    </div>
 
     <div id="approvalModal" class="approval-modal" hidden>
       <div class="approval-card">

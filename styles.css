@@ -471,6 +471,14 @@ textarea {
   padding: 18px;
 }
 
+.typing-indicator {
+  min-height: 20px;
+  margin: 0;
+  padding: 4px 18px 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .msg {
   max-width: 78%;
   margin-bottom: 12px;
@@ -560,6 +568,10 @@ textarea {
   padding: 24px;
 }
 
+.approval-modal[hidden] {
+  display: none;
+}
+
 .approval-card {
   width: min(100%, 420px);
   padding: 24px 22px 20px;
@@ -577,6 +589,27 @@ textarea {
 
 .approval-card .eyebrow {
   margin-bottom: 12px;
+}
+
+.report-card label {
+  display: block;
+  margin: 12px 0 6px;
+  text-align: left;
+}
+
+.report-card select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--elevated);
+  color: var(--text);
+  font: inherit;
+}
+
+.report-card .button-row {
+  margin-top: 16px;
 }
 
 .compact-stack {

@@ -3,14 +3,11 @@ export const ROOM_LENGTH = 4;
 export const ROOM_RE = /^[A-Z]{4}$/;
 
 export function normalizeRoomInput(value) {
-  return String(value ?? '')
-    .replace(/[^A-Za-z]/g, '')
-    .toUpperCase();
+  return String(value ?? '').trim().toUpperCase();
 }
 
 export function formatRoomCode(value) {
-  const normalized = normalizeRoomInput(value);
-  return normalized.slice(0, ROOM_LENGTH).toUpperCase();
+  return normalizeRoomInput(value).slice(0, ROOM_LENGTH);
 }
 
 export function validateRoomCode(value) {
@@ -28,29 +25,38 @@ export function validateRoomCode(value) {
 }
 
 export function createRoomCode() {
-  const bytes = new Uint8Array(ROOM_LENGTH);
-  crypto.getRandomValues(bytes);
   let code = '';
+  const limit = Math.floor(256 / ROOM_ALPHABET.length) * ROOM_ALPHABET.length;
 
-  for (const byte of bytes) {
-    const index = byte % ROOM_ALPHABET.length;
-    code += ROOM_ALPHABET[index];
+  while (code.length < ROOM_LENGTH) {
+    const bytes = new Uint8Array(ROOM_LENGTH - code.length);
+    crypto.getRandomValues(bytes);
+    for (const byte of bytes) {
+      if (byte < limit) code += ROOM_ALPHABET[byte % ROOM_ALPHABET.length];
+      if (code.length === ROOM_LENGTH) break;
+    }
   }
 
   return code;
 }
 
-export function buildInvitationUrl(code, baseUrl = globalThis.location?.origin ? `${globalThis.location.origin}${globalThis.location.pathname}` : 'http://localhost') {
+export function buildInvitationUrl(code, baseUrl = globalThis.location?.origin ? `${globalThis.location.origin}${globalThis.location.pathname}` : 'https://ghostchat.invalid/', invitationToken = '') {
   const value = formatRoomCode(code);
-  return `${baseUrl}#join=${encodeURIComponent(value)}`;
+  const token = invitationToken ? `&t=${encodeURIComponent(invitationToken)}` : '';
+  return `${baseUrl}#join=${encodeURIComponent(value)}${token}`;
+}
+
+export function parseInvitation(hashOrSearch = globalThis.location?.hash || '') {
+  const raw = String(hashOrSearch || '');
+  const fragment = raw.includes('#') ? raw.slice(raw.lastIndexOf('#') + 1) : raw.replace(/^\?/, '');
+  const params = new URLSearchParams(fragment);
+  const candidate = params.get('join') || params.get('room');
+  if (!candidate) return null;
+  return { code: normalizeRoomInput(candidate), token: params.get('t') || '' };
 }
 
 export function parseInvitationCode(hashOrSearch = globalThis.location?.hash || '') {
-  const raw = String(hashOrSearch || '');
-  const match = raw.match(/[#?][^#?]*?(?:join|room)=(.*)/i) || raw.match(/(?:join|room)=(.*)/i);
-  if (!match) return null;
-  const candidate = decodeURIComponent(match[1].split('&')[0]);
-  return formatRoomCode(candidate);
+  return parseInvitation(hashOrSearch)?.code || null;
 }
 
 export function buildPeerId(roomCode) {
