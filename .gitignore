@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+
+# Environment files (keep example files tracked)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Private credentials and cryptographic material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+*.der
+*.p8
+*.pub
+*.priv
+*.secret
+*.token
+*.oauth
+*.asc
+
+# Common secret/config storage
+.envrc
+.npmrc
+.aws/
+.gcloud/
+.azure/
+.ssh/
+secrets/
+private/
+credentials/
+
+# Logs and debugging output
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test and coverage artifacts
+coverage/
+.nyc_output/
+.pytest_cache/
+.jest/
+playwright-report/
+test-results/
+
+# Build and generated files
+dist/
+build/
+out/
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.vite/
+*.tsbuildinfo
+
+# Temporary and editor files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.orig
+.DS_Store
+Thumbs.db
+
+# Local or vendor caches
+/.cache/
+/.idea/
+/.vscode/
+*.local

@@ -6,7 +6,7 @@
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:;">
     <meta name="theme-color" content="#0b0d14">
-    <title>GhostChat — P2P ephemeral chat</title>
+    <title>GhostChat — Anonymous P2P Chat</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <link rel="stylesheet" href="styles.css">
     <script defer src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -26,32 +26,35 @@
         <div class="hero-layout">
           <div class="hero-copy">
             <p class="eyebrow">ANONYMOUS • TEMPORARY • DIRECT</p>
-            <h1>A conversation without an identity.</h1>
-            <p class="lead">Create a temporary room, invite someone, and chat without signing up.</p>
+            <h1>A conversation without a name.</h1>
+            <p class="lead">Create a private room, invite someone, or let GhostChat match you with a stranger.</p>
             <ul class="feature-list">
-              <li>No accounts</li>
-              <li>No chat history stored by GhostChat</li>
-              <li>Real-time encrypted communication</li>
+              <li>No signup or profile</li>
+              <li>Private room codes with 4-letter access</li>
+              <li>Matchmaking queue for anonymous pairings</li>
             </ul>
           </div>
 
           <div class="card action-card">
-            <div class="section-heading">
-              <h2>Start a conversation</h2>
-              <p>Create a private room or join an existing one.</p>
+            <div class="stack compact-stack">
+              <div class="section-heading">
+                <h2>Start a conversation</h2>
+                <p>Create a private room or find a stranger.</p>
+              </div>
+
+              <button id="findGhostBtn" class="primary action" type="button">Find a Ghost</button>
+              <button id="createRoomBtn" class="secondary action" type="button">Create Room</button>
+
+              <div class="divider"><span>OR JOIN A ROOM</span></div>
+
+              <label for="joinCodeInput">Room code</label>
+              <div class="stack">
+                <input id="joinCodeInput" type="text" maxlength="4" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD" aria-describedby="joinError">
+                <button id="joinBtn" class="secondary action" type="button">Join Room</button>
+              </div>
+              <p id="joinError" class="inline-error" role="alert" aria-live="polite"></p>
+              <p class="hint">Use a four-letter code from the room host.</p>
             </div>
-
-            <button id="createRoomBtn" class="primary action" type="button">Create Room</button>
-
-            <div class="divider"><span>OR JOIN A ROOM</span></div>
-
-            <label for="joinCodeInput">Room code</label>
-            <div class="stack">
-              <input id="joinCodeInput" type="text" maxlength="20" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-EFGH-JKLM" aria-describedby="joinError">
-              <button id="joinBtn" class="secondary action" type="button">Join Room</button>
-            </div>
-            <p id="joinError" class="inline-error" role="alert" aria-live="polite"></p>
-            <p class="hint">Get the room code from the person who created the chat.</p>
           </div>
         </div>
       </section>
@@ -60,7 +63,16 @@
         <div class="center-shell">
           <div class="spinner" aria-hidden="true"></div>
           <h2>Creating your room…</h2>
-          <p class="subtle">Claiming a private PeerJS room for this conversation.</p>
+          <p class="subtle">Claiming a private room for this chat.</p>
+        </div>
+      </section>
+
+      <section id="search-screen" data-state="SEARCHING" hidden>
+        <div class="center-shell narrow">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2>Finding a Ghost…</h2>
+          <p class="subtle">Searching the anonymous queue for a match.</p>
+          <button id="cancelSearchBtn" class="secondary small" type="button">Cancel</button>
         </div>
       </section>
 
@@ -79,11 +91,11 @@
             <img src="assets/logo.svg" alt="" width="64" height="64">
           </div>
           <h2>Waiting for another Ghost…</h2>
-          <p class="subtle">Share your room code or invitation link to start chatting.</p>
+          <p class="subtle">Share your code or invitation link to start chatting.</p>
 
           <div class="code-card">
             <label>YOUR ROOM CODE</label>
-            <div id="roomCodeValue" class="room-code">ABCD-EFGH-JKLM</div>
+            <div id="roomCodeValue" class="room-code">ABCD</div>
             <div class="button-row small-gap">
               <button id="copyCodeBtn" class="primary" type="button">Copy Code</button>
               <button id="copyLinkBtn" class="secondary" type="button">Copy Link</button>
@@ -100,7 +112,7 @@
         <div class="center-shell">
           <div class="spinner" aria-hidden="true"></div>
           <h2>Connecting…</h2>
-          <p class="subtle">Attempting to reach the host and establish the secure chat.</p>
+          <p class="subtle">Checking the room and waiting for approval.</p>
           <button id="cancelJoinBtn" class="secondary small" type="button">Cancel</button>
         </div>
       </section>
@@ -109,7 +121,7 @@
         <div class="center-shell">
           <div class="spinner" aria-hidden="true"></div>
           <h2>Secure handshake…</h2>
-          <p class="subtle">Verifying the room and waiting for acceptance.</p>
+          <p class="subtle">Opening a direct peer-to-peer session.</p>
         </div>
       </section>
 
@@ -169,6 +181,18 @@
         </div>
       </section>
     </main>
+
+    <div id="approvalModal" class="approval-modal" hidden>
+      <div class="approval-card">
+        <p class="eyebrow small">JOIN REQUEST</p>
+        <h3 id="approvalTitle">Someone wants to join</h3>
+        <p id="approvalMessage" class="subtle">A guest is asking to join your room.</p>
+        <div class="button-row">
+          <button id="acceptJoinBtn" class="primary" type="button">Accept</button>
+          <button id="declineJoinBtn" class="secondary" type="button">Decline</button>
+        </div>
+      </div>
+    </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   </body>

@@ -1,7 +1,5 @@
 import {
-  ROOM_LENGTH,
   buildInvitationUrl,
-  buildPeerId,
   createRoomCode,
   formatRoomCode,
   normalizeRoomInput,
@@ -21,20 +19,19 @@ const PEER_OPTS = {
 
 const MAX_MSG_LEN = 2000;
 const SEND_THROTTLE_MS = 150;
-const CONNECT_TIMEOUT_MS = 15000;
-const ALLOWED_TYPES = new Set(['hello', 'welcome', 'message', 'end', 'reject']);
-
 const state = {
   screen: 'HOME',
+  socket: null,
   peer: null,
   conn: null,
   roomCode: '',
   sessionId: crypto.randomUUID(),
   isHost: false,
   lastSendAt: 0,
-  connectTimer: null,
-  messages: [],
   pendingAction: 'home',
+  pendingJoinRequestId: null,
+  pendingJoinRoomCode: '',
+  coordinatorReady: false,
 };
 
 const refs = {};
@@ -46,31 +43,6 @@ function $id(id) {
 function setScreen(screen) {
   state.screen = screen;
   render();
-}
-
-function resetSessionState() {
-  state.isHost = false;
-  state.roomCode = '';
-  state.messages = [];
-  if (state.conn && state.conn.close) {
-    try {
-      state.conn.close();
-    } catch (error) {
-      console.warn('[GhostChat] Session close warning:', error);
-    }
-  }
-  state.conn = null;
-  if (state.peer) {
-    try {
-      state.peer.destroy();
-    } catch (error) {
-      console.warn('[GhostChat] Peer destroy warning:', error);
-    }
-  }
-  state.peer = null;
-  clearTimeout(state.connectTimer);
-  state.connectTimer = null;
-  state.sessionId = crypto.randomUUID();
 }
 
 function showToast(text, tone = 'info') {
@@ -100,272 +72,432 @@ function render() {
     statusDot.classList.remove('connected', 'waiting', 'error');
     if (state.screen === 'CONNECTED') {
       statusDot.classList.add('connected');
-    } else if (['WAITING', 'JOINING', 'HANDSHAKING', 'CREATING'].includes(state.screen)) {
+    } else if (['WAITING', 'JOINING', 'HANDSHAKING', 'CREATING', 'SEARCHING'].includes(state.screen)) {
       statusDot.classList.add('waiting');
     } else if (['ERROR', 'CONNECTION_LOST'].includes(state.screen)) {
       statusDot.classList.add('error');
     }
   }
 
-  const sendButton = refs.sendBtn;
-  if (sendButton) {
-    const value = refs.msgInput.value || '';
-    const trimmed = value.trim();
-    const throttleActive = Date.now() - state.lastSendAt < SEND_THROTTLE_MS;
-    sendButton.disabled = state.screen !== 'CONNECTED' || !trimmed || trimmed.length > MAX_MSG_LEN || throttleActive;
-  }
-
   if (refs.roomCodeValue) {
     refs.roomCodeValue.textContent = formatRoomCode(state.roomCode || '');
   }
+
+  const sendButton = refs.sendBtn;
+  if (sendButton) {
+    const hasText = (refs.msgInput.value || '').trim().length > 0;
+    const textTooLong = (refs.msgInput.value || '').trim().length > MAX_MSG_LEN;
+    const throttleActive = Date.now() - state.lastSendAt < SEND_THROTTLE_MS;
+    sendButton.disabled = state.screen !== 'CONNECTED' || !hasText || textTooLong || throttleActive;
+  }
+}
+
+function resetRuntime() {
+  if (state.conn && state.conn.close) {
+    try {
+      state.conn.close();
+    } catch (error) {
+      console.warn('[GhostChat] connection close warning', error);
+    }
+  }
+  state.conn = null;
+
+  if (state.peer) {
+    try {
+      state.peer.destroy();
+    } catch (error) {
+      console.warn('[GhostChat] peer destroy warning', error);
+    }
+  }
+  state.peer = null;
+  state.roomCode = '';
+  state.pendingJoinRequestId = null;
+  state.pendingJoinRoomCode = '';
+  refs.msgInput.value = '';
+  refs.chatMessages.innerHTML = '';
 }
 
 function setError(message) {
-  refs.errorMessage.textContent = message;
+  if (refs.errorMessage) {
+    refs.errorMessage.textContent = message;
+  }
   setScreen('ERROR');
 }
 
-function beginCreateFlow() {
-  resetSessionState();
+function ensureCoordinator() {
+  if (state.socket && (state.socket.readyState === WebSocket.OPEN || state.socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  const candidatePorts = [8080, 8081, 8082, 8083];
+
+  const tryConnect = (index) => {
+    if (index >= candidatePorts.length) {
+      showToast('Connection service unavailable.', 'error');
+      return;
+    }
+
+    const port = candidatePorts[index];
+    const socket = new WebSocket(`${protocol}://${location.hostname}:${port}`);
+    state.socket = socket;
+
+    socket.addEventListener('open', () => {
+      state.coordinatorReady = true;
+      sendCoordinator({ type: 'session.hello', sessionId: state.sessionId });
+    });
+
+    socket.addEventListener('message', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleCoordinatorMessage(payload);
+      } catch (error) {
+        console.warn('[GhostChat] invalid coordinator payload', error);
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      state.coordinatorReady = false;
+      if (state.socket === socket) {
+        state.socket = null;
+      }
+      tryConnect(index + 1);
+    });
+
+    socket.addEventListener('error', () => {
+      if (state.socket === socket) {
+        state.socket = null;
+      }
+      tryConnect(index + 1);
+    });
+  };
+
+  tryConnect(0);
+}
+
+function sendCoordinator(payload) {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  state.socket.send(JSON.stringify({ ...payload, sessionId: payload.sessionId || state.sessionId }));
+}
+
+function openHome() {
+  if (refs.approvalModal) {
+    refs.approvalModal.hidden = true;
+  }
+  resetRuntime();
+  refs.joinCodeInput.value = '';
+  refs.joinError.textContent = '';
+  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    sendCoordinator({ type: 'match.cancel', sessionId: state.sessionId });
+  }
+  setScreen('HOME');
+}
+
+function finishSession() {
+  const roomCodeToClose = state.pendingJoinRoomCode || state.roomCode;
+
+  if (state.conn && state.conn.open) {
+    try {
+      state.conn.send({ type: 'end' });
+    } catch (error) {
+      console.warn('[GhostChat] end message failed', error);
+    }
+  }
+
+  if (state.peer) {
+    try {
+      state.peer.destroy();
+    } catch (error) {
+      console.warn('[GhostChat] peer destroy failed', error);
+    }
+  }
+
+  state.peer = null;
+  state.conn = null;
+  state.roomCode = '';
+  state.pendingJoinRoomCode = '';
+  refs.msgInput.value = '';
+  refs.chatMessages.innerHTML = '';
+  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    sendCoordinator({ type: 'room.close', sessionId: state.sessionId, roomCode: roomCodeToClose });
+  }
+  setScreen('ENDED');
+}
+
+function bindPeerConnection(conn) {
+  state.conn = conn;
+
+  conn.on('open', () => {
+    setScreen('CONNECTED');
+    refs.statusLabel.textContent = 'Connected';
+    refs.msgInput.focus();
+    showToast('Connected');
+  });
+
+  conn.on('data', (payload) => {
+    try {
+      const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      if (!data || typeof data !== 'object') return;
+
+      if (data.type === 'message') {
+        const text = String(data.text || '').trim();
+        if (text && text.length <= MAX_MSG_LEN) {
+          appendMessage({ text, ts: Number(data.ts) || Date.now(), self: false });
+        }
+        return;
+      }
+
+      if (data.type === 'end') {
+        setScreen('CONNECTION_LOST');
+      }
+    } catch (error) {
+      console.warn('[GhostChat] incoming data parse failed', error);
+    }
+  });
+
+  conn.on('close', () => {
+    if (state.screen !== 'HOME' && state.screen !== 'ERROR' && state.screen !== 'ENDED') {
+      setScreen('CONNECTION_LOST');
+    }
+  });
+
+  conn.on('error', (error) => {
+    console.warn('[GhostChat] connection error', error);
+    setError('A direct connection error occurred.');
+  });
+}
+
+function createPeer({ idPrefix, onReady, onConnection }) {
+  const peer = new Peer(`${idPrefix}-${crypto.randomUUID()}`, PEER_OPTS);
+  peer.on('open', () => {
+    state.peer = peer;
+    if (onReady) {
+      onReady(peer.id);
+    }
+  });
+
+  peer.on('connection', (conn) => {
+    if (onConnection) {
+      onConnection(conn);
+    }
+  });
+
+  peer.on('error', (error) => {
+    console.warn('[GhostChat] peer error', error);
+    setError('PeerJS connection failed. Please try again.');
+  });
+
+  return peer;
+}
+
+function beginPrivateRoomCreation() {
+  resetRuntime();
   state.pendingAction = 'create';
   state.isHost = true;
   state.roomCode = createRoomCode();
   setScreen('CREATING');
-  state.peer = new Peer(buildPeerId(state.roomCode), PEER_OPTS);
-  bindHostPeer();
-}
+  ensureCoordinator();
 
-function bindHostPeer() {
-  if (!state.peer) return;
-
-  state.peer.on('open', () => {
-    state.isHost = true;
-    refs.roomCodeValue.textContent = formatRoomCode(state.roomCode);
-    setScreen('WAITING');
-    showToast('Room ready');
-  });
-
-  state.peer.on('error', (err) => {
-    if (err && err.type === 'unavailable-id') {
-      state.roomCode = createRoomCode();
-      if (state.peer) {
-        try {
-          state.peer.destroy();
-        } catch (error) {
-          console.warn('[GhostChat] retry destroy warning', error);
-        }
-      }
-      state.peer = new Peer(buildPeerId(state.roomCode), PEER_OPTS);
-      bindHostPeer();
-      return;
-    }
-    handlePeerError(err);
-  });
-
-  state.peer.on('connection', (incoming) => {
-    if (state.conn && state.conn.open) {
-      incoming.on('open', () => {
-        try {
-          incoming.send({ type: 'reject', reason: 'room-full', v: 1 });
-        } catch (error) {
-          console.warn('[GhostChat] reject not sent', error);
-        }
-        incoming.close();
-      });
-      return;
-    }
-
-    state.conn = incoming;
-    incoming.on('open', () => {
-      state.sessionId = crypto.randomUUID();
-      setScreen('HANDSHAKING');
-      showToast('Guest connected');
-    });
-    incoming.on('close', () => {
-      if (state.screen !== 'HOME' && state.screen !== 'ERROR') {
-        setScreen('CONNECTION_LOST');
-      }
-    });
-    incoming.on('data', handleIncomingData);
-  });
-
-  state.peer.on('disconnected', () => {
-    if (!state.isHost || state.screen === 'HOME') return;
-    try {
-      state.peer.reconnect();
-    } catch (error) {
-      console.warn('[GhostChat] reconnect warning', error);
-    }
+  createPeer({
+    idPrefix: 'ghost-room',
+    onReady: (peerId) => {
+      sendCoordinator({ type: 'room.create', sessionId: state.sessionId, hostPeerId: peerId, roomCode: state.roomCode });
+    },
+    onConnection: (conn) => {
+      bindPeerConnection(conn);
+    },
   });
 }
 
-function handlePeerError(err) {
-  console.warn('[GhostChat peer error]', err);
+function beginSearchMatching() {
+  resetRuntime();
+  state.pendingAction = 'search';
+  state.isHost = false;
+  setScreen('SEARCHING');
+  ensureCoordinator();
 
-  const type = err && err.type;
-  let message = 'Something went wrong: ' + ((err && (err.message || err.type)) || 'unknown error');
-
-  if (type === 'peer-unavailable') {
-    message = 'Room not found. Check the code or ask the other person to create a new room.';
-  } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(type)) {
-    message = 'Cannot reach the connection service. Check your internet and try again.';
-  } else if (type === 'webrtc') {
-    message = 'Could not establish a direct connection. Some networks block peer-to-peer chat.';
-  } else if (type === 'browser-incompatible') {
-    message = 'Your browser does not support WebRTC. Try Chrome, Firefox, or Safari.';
-  } else if (type === 'unavailable-id') {
-    message = 'This room is already in use. Creating a new one…';
-  }
-
-  setError(message);
+  createPeer({
+    idPrefix: 'ghost-match',
+    onReady: (peerId) => {
+      sendCoordinator({ type: 'match.search', sessionId: state.sessionId, peerId });
+    },
+    onConnection: (conn) => {
+      bindPeerConnection(conn);
+    },
+  });
 }
 
-function submitJoin(rawValue) {
-  const code = normalizeRoomInput(rawValue ?? refs.joinCodeInput.value);
-  const error = validateRoomCode(code);
-  if (error) {
-    refs.joinError.textContent = error;
+function beginGuestJoin(rawInput) {
+  const rawCode = normalizeRoomInput(rawInput ?? refs.joinCodeInput.value);
+  const validationError = validateRoomCode(rawCode);
+  if (validationError) {
+    refs.joinError.textContent = validationError;
     return;
   }
 
   refs.joinError.textContent = '';
-  state.roomCode = code;
-  startGuestConnection(code);
-}
-
-function startGuestConnection(code) {
-  resetSessionState();
+  resetRuntime();
   state.pendingAction = 'join';
-  state.isHost = false;
-  state.roomCode = code;
+  state.roomCode = rawCode;
+  state.pendingJoinRoomCode = rawCode;
   setScreen('JOINING');
+  ensureCoordinator();
 
-  const guestId = `gc-guest-${crypto.randomUUID()}`;
-  state.peer = new Peer(guestId, PEER_OPTS);
-
-  state.peer.on('open', () => {
-    const hostId = buildPeerId(code);
-    state.conn = state.peer.connect(hostId, { reliable: true, metadata: { v: 1 } });
-
-    state.conn.on('data', handleIncomingData);
-    state.conn.on('open', () => {
-      setScreen('HANDSHAKING');
-      state.conn.send({ type: 'hello', v: 1, roomCode: code });
-      state.connectTimer = setTimeout(() => {
-        if (state.screen === 'HANDSHAKING') {
-          setError('Connection timed out. The room may be unavailable or the host left.');
-        }
-      }, CONNECT_TIMEOUT_MS);
-    });
-
-    state.conn.on('error', (err) => {
-      handlePeerError(err);
-    });
-
-    state.conn.on('close', () => {
-      if (state.screen !== 'HOME' && state.screen !== 'ERROR' && state.screen !== 'ENDED') {
-        setScreen('CONNECTION_LOST');
-      }
-    });
-  });
-
-  state.peer.on('error', (err) => {
-    handlePeerError(err);
+  createPeer({
+    idPrefix: 'ghost-join',
+    onReady: (peerId) => {
+      sendCoordinator({ type: 'room.join.request', sessionId: state.sessionId, roomCode: rawCode, guestPeerId: peerId });
+    },
+    onConnection: (conn) => {
+      bindPeerConnection(conn);
+    },
   });
 }
 
-function handleIncomingData(raw) {
-  let payload;
-  try {
-    payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch (error) {
-    return;
-  }
-
+function handleCoordinatorMessage(payload) {
   if (!payload || typeof payload !== 'object') return;
-  if (!ALLOWED_TYPES.has(payload.type)) return;
 
-  if (payload.type === 'hello') {
-    if (state.isHost && state.conn) {
-      state.conn.send({ type: 'welcome', v: 1, roomCode: state.roomCode });
-      setScreen('CONNECTED');
-      refs.statusLabel.textContent = 'Connected';
-      refs.msgInput.value = '';
-      refs.msgInput.focus();
+  if (payload.type === 'session.ack') {
+    state.coordinatorReady = true;
+    return;
+  }
+
+  if (payload.type === 'room.created') {
+    state.roomCode = payload.roomCode || state.roomCode;
+    refs.roomCodeValue.textContent = formatRoomCode(state.roomCode);
+    setScreen('WAITING');
+    showToast('Room created');
+    return;
+  }
+
+  if (payload.type === 'room.join.received') {
+    showToast('Waiting for host approval…');
+    return;
+  }
+
+  if (payload.type === 'room.join.pending') {
+    refs.approvalTitle.textContent = 'Someone wants to join';
+    refs.approvalMessage.textContent = `Guest ${payload.guestSessionId.slice(-6)} wants to join room ${payload.roomCode}.`;
+    state.pendingJoinRequestId = payload.requestId;
+    state.pendingJoinRoomCode = payload.roomCode;
+    refs.approvalModal.hidden = false;
+    return;
+  }
+
+  if (payload.type === 'room.join.authorized') {
+    state.roomCode = payload.roomCode || state.roomCode;
+    if (state.peer && state.peer.destroy) {
+      state.peer.destroy();
     }
+    createPeer({
+      idPrefix: 'ghost-connect',
+      onReady: () => {
+        if (state.peer && payload.hostPeerId) {
+          const connection = state.peer.connect(payload.hostPeerId, { reliable: true });
+          bindPeerConnection(connection);
+        }
+      },
+      onConnection: (conn) => {
+        bindPeerConnection(conn);
+      },
+    });
     return;
   }
 
-  if (payload.type === 'welcome') {
-    if (!state.isHost) {
-      clearTimeout(state.connectTimer);
-      state.connectTimer = null;
-      setScreen('CONNECTED');
-      refs.statusLabel.textContent = 'Connected';
-      refs.msgInput.focus();
-      showToast('Connected');
+  if (payload.type === 'room.join.declined') {
+    refs.approvalModal.hidden = true;
+    setError('The host declined your request.');
+    return;
+  }
+
+  if (payload.type === 'match.queued') {
+    showToast('Searching for a Ghost…');
+    return;
+  }
+
+  if (payload.type === 'match.found') {
+    setScreen('HANDSHAKING');
+    const targetPeerId = payload.peerId;
+    if (!targetPeerId) {
+      return;
     }
+
+    if (state.peer && state.peer.destroy) {
+      state.peer.destroy();
+    }
+
+    createPeer({
+      idPrefix: 'ghost-match-connect',
+      onReady: () => {
+        const connection = state.peer.connect(targetPeerId, { reliable: true });
+        bindPeerConnection(connection);
+      },
+      onConnection: (conn) => {
+        bindPeerConnection(conn);
+      },
+    });
     return;
   }
 
-  if (payload.type === 'reject') {
-    const reason = payload.reason || 'room-full';
-    const message = reason === 'room-full' ? 'Room is full.' : 'This room is unavailable.';
-    setError(message);
-    return;
-  }
-
-  if (payload.type === 'end') {
+  if (payload.type === 'room.closed') {
+    showToast(payload.reason || 'Room closed.', 'error');
     setScreen('CONNECTION_LOST');
     return;
   }
 
-  if (payload.type === 'message') {
-    if (typeof payload.text !== 'string') return;
-    const text = payload.text.trim();
-    if (!text || text.length > MAX_MSG_LEN) return;
-    const ts = typeof payload.ts === 'number' && Number.isFinite(payload.ts) ? payload.ts : Date.now();
-    appendMessage({ text, ts, self: false });
+  if (payload.type === 'error') {
+    showToast(payload.message || 'Something went wrong.', 'error');
+    if (state.screen === 'JOINING' || state.screen === 'SEARCHING') {
+      setError(payload.message || 'Unable to reach the coordinator.');
+    }
   }
 }
 
-function appendMessage({ text, ts, self }) {
-  const el = document.createElement('div');
-  el.className = 'msg ' + (self ? 'self' : 'peer');
+function acceptJoinRequest() {
+  if (!state.pendingJoinRequestId || !state.pendingJoinRoomCode) {
+    refs.approvalModal.hidden = true;
+    return;
+  }
 
-  const body = document.createElement('div');
-  body.textContent = text;
+  sendCoordinator({
+    type: 'room.join.accept',
+    sessionId: state.sessionId,
+    roomCode: state.pendingJoinRoomCode,
+    requestId: state.pendingJoinRequestId,
+  });
 
-  const time = document.createElement('time');
-  time.dateTime = new Date(ts).toISOString();
-  time.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-  el.appendChild(body);
-  el.appendChild(time);
-  refs.chatMessages.appendChild(el);
-  refs.chatMessages.scrollTop = refs.chatMessages.scrollHeight;
+  refs.approvalModal.hidden = true;
+  state.pendingJoinRequestId = null;
+  state.pendingJoinRoomCode = '';
 }
 
-function sendMessage() {
-  const value = refs.msgInput.value || '';
-  const text = value.trim();
-  if (!text || text.length > MAX_MSG_LEN) return;
-  if (!state.conn || !state.conn.open || state.screen !== 'CONNECTED') return;
-  if (Date.now() - state.lastSendAt < SEND_THROTTLE_MS) return;
-
-  state.lastSendAt = Date.now();
-  const payload = { type: 'message', text, ts: Date.now(), id: crypto.randomUUID() };
-
-  try {
-    state.conn.send(payload);
-    appendMessage({ text, ts: payload.ts, self: true });
-    refs.msgInput.value = '';
-    refs.msgInput.focus();
-    render();
-  } catch (error) {
-    console.warn('[GhostChat] send failed', error);
-    setScreen('CONNECTION_LOST');
+function declineJoinRequest() {
+  if (!state.pendingJoinRequestId || !state.pendingJoinRoomCode) {
+    refs.approvalModal.hidden = true;
+    return;
   }
+
+  sendCoordinator({
+    type: 'room.join.decline',
+    sessionId: state.sessionId,
+    roomCode: state.pendingJoinRoomCode,
+    requestId: state.pendingJoinRequestId,
+  });
+
+  refs.approvalModal.hidden = true;
+  state.pendingJoinRequestId = null;
+  state.pendingJoinRoomCode = '';
+}
+
+function copyRoomCode() {
+  copyText(formatRoomCode(state.roomCode), 'Room code copied');
+}
+
+function copyInviteLink() {
+  copyText(buildInvitationUrl(state.roomCode), 'Invitation link copied');
 }
 
 async function copyText(value, successText) {
@@ -388,11 +520,11 @@ async function copyText(value, successText) {
     if (copied) {
       showToast(successText);
     } else {
-      showToast('Could not copy automatically.', 'error');
+      showToast('Copy not available in this browser.', 'error');
     }
   } catch (error) {
     console.warn('[GhostChat] copy failed', error);
-    showToast('Could not copy automatically.', 'error');
+    showToast('Copy not available in this browser.', 'error');
   }
 }
 
@@ -408,48 +540,42 @@ function handleShare() {
   copyText(url, 'Invitation link copied');
 }
 
-function openHome() {
-  if (state.peer) {
-    try {
-      state.peer.destroy();
-    } catch (error) {
-      console.warn('[GhostChat] home destroy warning', error);
-    }
-  }
+function appendMessage({ text, ts, self }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = `msg ${self ? 'self' : 'peer'}`;
 
-  state.peer = null;
-  state.conn = null;
-  state.roomCode = '';
-  refs.joinCodeInput.value = '';
-  refs.joinError.textContent = '';
-  refs.msgInput.value = '';
-  refs.chatMessages.innerHTML = '';
-  setScreen('HOME');
+  const body = document.createElement('div');
+  body.textContent = text;
+
+  const time = document.createElement('time');
+  time.dateTime = new Date(ts).toISOString();
+  time.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  wrapper.appendChild(body);
+  wrapper.appendChild(time);
+  refs.chatMessages.appendChild(wrapper);
+  refs.chatMessages.scrollTop = refs.chatMessages.scrollHeight;
 }
 
-function finishSession() {
-  if (state.conn && state.conn.open) {
-    try {
-      state.conn.send({ type: 'end' });
-    } catch (error) {
-      console.warn('[GhostChat] end send warning', error);
-    }
-  }
+function sendMessage() {
+  const text = (refs.msgInput.value || '').trim();
+  if (!text || text.length > MAX_MSG_LEN) return;
+  if (!state.conn || !state.conn.open || state.screen !== 'CONNECTED') return;
+  if (Date.now() - state.lastSendAt < SEND_THROTTLE_MS) return;
 
-  if (state.peer) {
-    try {
-      state.peer.destroy();
-    } catch (error) {
-      console.warn('[GhostChat] finish destroy warning', error);
-    }
-  }
+  const payload = { type: 'message', text, ts: Date.now() };
+  state.lastSendAt = Date.now();
 
-  state.peer = null;
-  state.conn = null;
-  state.roomCode = '';
-  refs.msgInput.value = '';
-  refs.chatMessages.innerHTML = '';
-  setScreen('ENDED');
+  try {
+    state.conn.send(payload);
+    appendMessage({ text, ts: payload.ts, self: true });
+    refs.msgInput.value = '';
+    refs.msgInput.focus();
+    render();
+  } catch (error) {
+    console.warn('[GhostChat] send failed', error);
+    setScreen('CONNECTION_LOST');
+  }
 }
 
 function parseInvitationFromLocation() {
@@ -462,37 +588,48 @@ function parseInvitationFromLocation() {
     return;
   }
 
-  submitJoin(candidate);
+  beginGuestJoin(candidate);
 }
 
 function bindEvents() {
-  refs.createRoomBtn.addEventListener('click', beginCreateFlow);
-  refs.joinBtn.addEventListener('click', () => submitJoin(refs.joinCodeInput.value));
+  refs.findGhostBtn.addEventListener('click', beginSearchMatching);
+  refs.createRoomBtn.addEventListener('click', beginPrivateRoomCreation);
+  refs.joinBtn.addEventListener('click', () => beginGuestJoin(refs.joinCodeInput.value));
   refs.joinCodeInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      submitJoin(refs.joinCodeInput.value);
+      beginGuestJoin(refs.joinCodeInput.value);
     }
   });
 
-  refs.copyCodeBtn.addEventListener('click', () => copyText(formatRoomCode(state.roomCode), 'Room code copied'));
-  refs.copyLinkBtn.addEventListener('click', () => copyText(buildInvitationUrl(state.roomCode), 'Invitation link copied'));
+  refs.copyCodeBtn.addEventListener('click', copyRoomCode);
+  refs.copyLinkBtn.addEventListener('click', copyInviteLink);
   refs.shareLinkBtn.addEventListener('click', handleShare);
   refs.waitingLeaveBtn.addEventListener('click', finishSession);
   refs.cancelJoinBtn.addEventListener('click', openHome);
+  refs.cancelSearchBtn.addEventListener('click', () => {
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+      sendCoordinator({ type: 'match.cancel', sessionId: state.sessionId });
+    }
+    openHome();
+  });
   refs.endChatBtn.addEventListener('click', finishSession);
-  refs.newChatFromLostBtn.addEventListener('click', beginCreateFlow);
+  refs.newChatFromLostBtn.addEventListener('click', beginPrivateRoomCreation);
   refs.homeFromLostBtn.addEventListener('click', openHome);
-  refs.startNewChatBtn.addEventListener('click', beginCreateFlow);
+  refs.startNewChatBtn.addEventListener('click', beginPrivateRoomCreation);
   refs.homeFromEndedBtn.addEventListener('click', openHome);
   refs.homeFromErrorBtn.addEventListener('click', openHome);
   refs.retryBtn.addEventListener('click', () => {
     if (state.pendingAction === 'create') {
-      beginCreateFlow();
+      beginPrivateRoomCreation();
+      return;
+    }
+    if (state.pendingAction === 'search') {
+      beginSearchMatching();
       return;
     }
     if (state.roomCode) {
-      startGuestConnection(state.roomCode);
+      beginGuestJoin(state.roomCode);
       return;
     }
     openHome();
@@ -511,6 +648,9 @@ function bindEvents() {
     showToast('No signup, no chat history stored by GhostChat.', 'info');
   });
 
+  refs.acceptJoinBtn.addEventListener('click', acceptJoinRequest);
+  refs.declineJoinBtn.addEventListener('click', declineJoinRequest);
+
   window.addEventListener('beforeunload', () => {
     if (state.conn && state.conn.open) {
       try {
@@ -519,7 +659,6 @@ function bindEvents() {
         console.warn('[GhostChat] unload message failed', error);
       }
     }
-
     if (state.peer) {
       try {
         state.peer.destroy();
@@ -537,6 +676,7 @@ function bindEvents() {
 }
 
 function boot() {
+  refs.findGhostBtn = $id('findGhostBtn');
   refs.createRoomBtn = $id('createRoomBtn');
   refs.joinCodeInput = $id('joinCodeInput');
   refs.joinBtn = $id('joinBtn');
@@ -547,6 +687,7 @@ function boot() {
   refs.shareLinkBtn = $id('shareLinkBtn');
   refs.waitingLeaveBtn = $id('waitingLeaveBtn');
   refs.cancelJoinBtn = $id('cancelJoinBtn');
+  refs.cancelSearchBtn = $id('cancelSearchBtn');
   refs.msgInput = $id('msgInput');
   refs.sendBtn = $id('sendBtn');
   refs.chatMessages = $id('chatMessages');
@@ -562,8 +703,14 @@ function boot() {
   refs.homeFromErrorBtn = $id('homeFromErrorBtn');
   refs.privacyBtn = $id('privacyBtn');
   refs.toast = $id('toast');
+  refs.approvalModal = $id('approvalModal');
+  refs.approvalTitle = $id('approvalTitle');
+  refs.approvalMessage = $id('approvalMessage');
+  refs.acceptJoinBtn = $id('acceptJoinBtn');
+  refs.declineJoinBtn = $id('declineJoinBtn');
 
   bindEvents();
+  ensureCoordinator();
   render();
   parseInvitationFromLocation();
 }

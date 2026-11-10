@@ -1,17 +1,16 @@
-export const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-export const ROOM_LENGTH = 12;
-export const ROOM_RE = /^[A-HJ-NP-Z2-9]{12}$/i;
+export const ROOM_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+export const ROOM_LENGTH = 4;
+export const ROOM_RE = /^[A-Z]{4}$/;
 
 export function normalizeRoomInput(value) {
   return String(value ?? '')
-    .replace(/[\s-]+/g, '')
+    .replace(/[^A-Za-z]/g, '')
     .toUpperCase();
 }
 
 export function formatRoomCode(value) {
   const normalized = normalizeRoomInput(value);
-  if (!normalized) return '';
-  return normalized.replace(/(.{4})/g, '$1-').replace(/-$/, '');
+  return normalized.slice(0, ROOM_LENGTH).toUpperCase();
 }
 
 export function validateRoomCode(value) {
@@ -20,10 +19,10 @@ export function validateRoomCode(value) {
     return 'Enter a valid room code.';
   }
   if (normalized.length !== ROOM_LENGTH) {
-    return 'Room code must be 12 characters.';
+    return 'Room code must be 4 letters.';
   }
   if (!ROOM_RE.test(normalized)) {
-    return 'Only letters and numbers from the allowed room set are valid.';
+    return 'Only uppercase letters A-Z are valid.';
   }
   return null;
 }
@@ -51,10 +50,9 @@ export function parseInvitationCode(hashOrSearch = globalThis.location?.hash || 
   const match = raw.match(/[#?][^#?]*?(?:join|room)=(.*)/i) || raw.match(/(?:join|room)=(.*)/i);
   if (!match) return null;
   const candidate = decodeURIComponent(match[1].split('&')[0]);
-  const normalized = normalizeRoomInput(candidate);
-  return formatRoomCode(normalized);
+  return formatRoomCode(candidate);
 }
 
 export function buildPeerId(roomCode) {
-  return `gc-v1-${normalizeRoomInput(roomCode)}`;
+  return `gc-v2-${normalizeRoomInput(roomCode)}-${crypto.randomUUID()}`;
 }
