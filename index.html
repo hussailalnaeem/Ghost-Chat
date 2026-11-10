@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:;">
+    <title>GhostChat — P2P ephemeral chat</title>
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <main id="app">
+      <section data-state="LANDING" hidden>
+        <h1>GhostChat</h1>
+        <p class="helper-text">Anyone with the link can join. Share carefully.</p>
+        <label for="roomInput">Room code</label>
+        <div class="row">
+          <input id="roomInput" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Room code" placeholder="room-name">
+          <button id="joinBtn" type="button">Create / Join</button>
+        </div>
+        <p id="landingError" role="alert" hidden></p>
+      </section>
+
+      <section data-state="CLAIMING_ID" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <h2>Setting up your room…</h2>
+      </section>
+
+      <section data-state="HOST_WAITING" hidden>
+        <div class="status-line"><span class="status-dot connecting"></span>Room open</div>
+        <p class="eyebrow">YOUR ROOM CODE</p>
+        <code id="roomDisplay"></code>
+        <button id="copyBtn" type="button">Copy link</button>
+        <p>Waiting for a peer…</p>
+      </section>
+
+      <section data-state="GUEST_CONNECTING" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <h2>Connecting to host…</h2>
+        <button id="cancelBtn" type="button">Cancel</button>
+      </section>
+
+      <section data-state="CONNECTED" hidden>
+        <div class="chat-header">
+          <div class="header-left">
+            <span id="statusDot" class="status-dot connected" aria-label="Connected"></span>
+            <code id="connectedRoom"></code>
+          </div>
+          <button id="leaveBtn" type="button">Leave</button>
+        </div>
+        <div id="messages" role="log" aria-live="polite" aria-label="Messages"></div>
+        <div id="sentinel" aria-hidden="true"></div>
+        <div class="composer row">
+          <input id="msgInput" maxlength="2000" autocomplete="off" spellcheck="false" aria-label="Message" placeholder="Type a message…">
+          <button id="sendBtn" type="button" disabled>Send</button>
+        </div>
+      </section>
+
+      <section data-state="PEER_LEFT" hidden>
+        <span class="status-dot disconnected" aria-hidden="true"></span>
+        <h2>Peer disconnected.</h2>
+        <button id="newChatBtn" type="button">New chat</button>
+      </section>
+
+      <section data-state="ERROR" hidden>
+        <span class="status-dot disconnected" aria-hidden="true"></span>
+        <p id="errorMsg" role="alert"></p>
+        <button id="retryBtn" type="button">Retry</button>
+        <button id="homeBtn" type="button">Home</button>
+      </section>
+    </main>
+  </body>
+</html>
