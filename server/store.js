@@ -8,31 +8,21 @@ const matchKey = (id) => `${PREFIX}:match:${id}`;
 const reportKey = (id) => `${PREFIX}:report:${id}`;
 const instanceChannel = (id) => `${PREFIX}:instance:${id}`;
 
-const AUTHORIZE_REQUEST = `
-if redis.call('EXISTS', KEYS[1]) == 0 then return {2} end
-local count = redis.call('INCR', KEYS[2])
-if count == 1 then redis.call('PEXPIRE', KEYS[2], ARGV[2]) end
-if count > tonumber(ARGV[1]) then return {0} end
-return {1, redis.call('HGETALL', KEYS[1])}
-`;
-
 const CREATE_ROOM = `
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
-local registeredPeerId = redis.call('HGET', KEYS[3], 'peerId') or ''
-if registeredPeerId ~= '' and registeredPeerId ~= ARGV[1] then return -1 end
+if redis.call('HGET', KEYS[3], 'peerId') ~= ARGV[1] then return -1 end
 if redis.call('HGET', KEYS[3], 'status') ~= 'connected' then return -2 end
 redis.call('HSET', KEYS[2], 'code', ARGV[2], 'hostSessionId', ARGV[3], 'hostInstanceId', ARGV[4], 'hostPeerId', ARGV[1], 'invitationHash', ARGV[7], 'pendingRequestId', '', 'pendingGuestSessionId', '', 'pendingGuestPeerId', '', 'guestSessionId', '', 'guestPeerId', '', 'authorization', '')
 redis.call('EXPIRE', KEYS[2], ARGV[5])
 redis.call('SET', KEYS[1], ARGV[6], 'EX', ARGV[5])
-redis.call('HSET', KEYS[3], 'peerId', ARGV[1], 'mode', 'private-host', 'roomId', ARGV[6], 'status', 'waiting')
+redis.call('HSET', KEYS[3], 'mode', 'private-host', 'roomId', ARGV[6], 'status', 'waiting')
 redis.call('EXPIRE', KEYS[3], ARGV[5])
 return 1
 `;
 
 const REQUEST_JOIN = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return {'missing'} end
-local registeredPeerId = redis.call('HGET', KEYS[3], 'peerId') or ''
-if registeredPeerId ~= '' and registeredPeerId ~= ARGV[1] then return {'unregistered'} end
+if redis.call('HGET', KEYS[3], 'peerId') ~= ARGV[1] then return {'unregistered'} end
 if redis.call('HGET', KEYS[3], 'status') ~= 'connected' then return {'busy'} end
 local guest = redis.call('HGET', KEYS[1], 'guestSessionId') or ''
 local pending = redis.call('HGET', KEYS[1], 'pendingGuestSessionId') or ''
@@ -49,12 +39,12 @@ local invitationHash = redis.call('HGET', KEYS[1], 'invitationHash') or ''
 if ARGV[4] ~= '' then
   if invitationHash == '' or invitationHash ~= ARGV[4] then return {'invalid-invitation'} end
   redis.call('HSET', KEYS[1], 'guestSessionId', ARGV[3], 'guestPeerId', guestPeerId, 'authorization', ARGV[5])
-  redis.call('HSET', KEYS[3], 'peerId', guestPeerId, 'roomId', roomId, 'mode', 'private-guest', 'status', 'connecting')
+  redis.call('HSET', KEYS[3], 'roomId', roomId, 'mode', 'private-guest', 'status', 'connecting')
   redis.call('HSET', host, 'status', 'connecting')
   return {'authorized', hostSessionId, hostInstanceId, hostPeerId, guestPeerId, code, roomId}
 end
 redis.call('HSET', KEYS[1], 'pendingRequestId', ARGV[2], 'pendingGuestSessionId', ARGV[3], 'pendingGuestPeerId', guestPeerId)
-redis.call('HSET', KEYS[3], 'peerId', ARGV[1], 'roomId', roomId, 'mode', 'private-guest', 'status', 'joining')
+redis.call('HSET', KEYS[3], 'roomId', roomId, 'mode', 'private-guest', 'status', 'joining')
 return {'pending', hostSessionId, hostInstanceId, hostPeerId, guestPeerId, code, roomId}
 `;
 
@@ -89,8 +79,7 @@ return {'declined', guestSessionId, guestInstanceId, code}
 const SEARCH_MATCH = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return {'missing'} end
 local peerId = redis.call('HGET', KEYS[1], 'peerId') or ''
-if peerId ~= '' and peerId ~= ARGV[1] then return {'unregistered'} end
-peerId = ARGV[1]
+if peerId == '' or peerId ~= ARGV[1] then return {'unregistered'} end
 local status = redis.call('HGET', KEYS[1], 'status') or ''
 if status == 'matched' then return {'already-matched'} end
 if status ~= 'connected' and status ~= 'searching' then return {'busy'} end
@@ -104,7 +93,7 @@ for _, queuedSessionId in ipairs(initialQueue) do
   end
 end
 if redis.call('ZCARD', KEYS[2]) >= 1000 and not redis.call('ZSCORE', KEYS[2], ARGV[2]) then return {'full'} end
-redis.call('HSET', KEYS[1], 'peerId', peerId, 'mode', 'matchmaking', 'status', 'searching')
+redis.call('HSET', KEYS[1], 'mode', 'matchmaking', 'status', 'searching')
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 redis.call('ZADD', KEYS[2], 'NX', ARGV[5], ARGV[2])
 local candidates = redis.call('ZRANGE', KEYS[2], 0, 999)
@@ -194,11 +183,6 @@ export function createMemoryStore(shared = createMemoryState()) {
     async getSession(id) {
       return shared.sessions.get(id) || null;
     },
-    async authorizeRequest(id, action, limit, windowMs) {
-      const allowed = await this.rateLimit(id, action, limit, windowMs);
-      if (!allowed) return { allowed: false, limited: true, session: null };
-      return { allowed: true, limited: false, session: await this.getSession(id) };
-    },
     async touchSession() {},
     async registerPeer(sessionId, peerId) {
       const session = shared.sessions.get(sessionId);
@@ -208,13 +192,12 @@ export function createMemoryStore(shared = createMemoryState()) {
     },
     async createRoom({ sessionId, instanceId, peerId, roomCode, roomId, invitationHash, ttl }) {
       const session = shared.sessions.get(sessionId);
-      if (!session || (session.peerId && session.peerId !== peerId)) return false;
+      if (!session || session.peerId !== peerId) return false;
       if (session.status !== 'connected') return false;
       if (shared.codeToRoom.has(roomCode)) return false;
       const room = { roomCode, roomId, hostSessionId: sessionId, hostInstanceId: instanceId, hostPeerId: peerId, invitationHash, pendingRequestId: null, pendingGuestSessionId: null, pendingGuestPeerId: null, guestSessionId: null, guestPeerId: null, authorization: null };
       shared.rooms.set(roomId, room);
       shared.codeToRoom.set(roomCode, roomId);
-      session.peerId = peerId;
       session.roomId = roomId;
       session.mode = 'private-host';
       session.status = 'waiting';
@@ -226,7 +209,7 @@ export function createMemoryStore(shared = createMemoryState()) {
       const room = roomId && shared.rooms.get(roomId);
       const guest = shared.sessions.get(guestSessionId);
       if (!room) return { status: 'missing' };
-      if (!guest || (guest.peerId && guest.peerId !== peerId)) return { status: 'unregistered' };
+      if (!guest?.peerId || guest.peerId !== peerId) return { status: 'unregistered' };
       if (guest.status !== 'connected') return { status: 'busy' };
       if (room.guestSessionId || room.pendingGuestSessionId) return { status: 'full' };
       const host = shared.sessions.get(room.hostSessionId);
@@ -234,7 +217,6 @@ export function createMemoryStore(shared = createMemoryState()) {
       if (invitationHash) {
         if (!room.invitationHash || room.invitationHash !== invitationHash) return { status: 'invalid-invitation' };
         room.guestSessionId = guestSessionId;
-        guest.peerId = peerId;
         room.guestPeerId = guest.peerId;
         room.authorization = authorization;
         guest.roomId = roomId;
@@ -245,8 +227,7 @@ export function createMemoryStore(shared = createMemoryState()) {
       }
       room.pendingRequestId = requestId;
       room.pendingGuestSessionId = guestSessionId;
-      room.pendingGuestPeerId = peerId;
-      guest.peerId = peerId;
+      room.pendingGuestPeerId = guest.peerId;
       guest.roomId = roomId;
       guest.mode = 'private-guest';
       guest.status = 'joining';
@@ -298,12 +279,11 @@ export function createMemoryStore(shared = createMemoryState()) {
     },
     async search({ sessionId, instanceId, peerId, matchId, authorization, ttl }) {
       const session = shared.sessions.get(sessionId);
-      if (!session || (session.peerId && session.peerId !== peerId)) return { status: 'unregistered' };
+      if (!session || session.peerId !== peerId) return { status: 'unregistered' };
       if (session.status === 'matched') return { status: 'already-matched' };
       if (session.status !== 'connected' && session.status !== 'searching') return { status: 'busy' };
       if (shared.queue.length >= 1000 && !shared.queue.includes(sessionId)) return { status: 'full' };
       session.mode = 'matchmaking';
-      session.peerId = peerId;
       session.status = 'searching';
       const other = shared.queue.map((id) => shared.sessions.get(id)).find((candidate) => candidate && candidate.sessionId !== sessionId && candidate.status === 'searching' && candidate.peerId);
       if (!other) {
@@ -419,7 +399,6 @@ export function createRedisStore(redisUrl) {
 
   return {
     async attachInstance(id, callback) {
-      const initializationStartedAt = performance.now();
       instanceId = id;
       onInstanceEvent = callback;
       await Promise.all([client.connect(), subscriber.connect()]);
@@ -431,7 +410,6 @@ export function createRedisStore(redisUrl) {
           console.error('[GhostChat] invalid Redis event', error.message);
         }
       });
-      console.info('[GhostChat timing] redis.instance.ready', JSON.stringify({ durationMs: performance.now() - initializationStartedAt }));
     },
     async createSession(session) {
       await client.hSet(sessionKey(session.sessionId), { instanceId: session.instanceId, peerId: '', mode: 'idle', status: 'connected', roomId: '', matchId: '' });
@@ -440,19 +418,6 @@ export function createRedisStore(redisUrl) {
     async getSession(id) {
       const values = await client.hGetAll(sessionKey(id));
       return Object.keys(values).length ? { sessionId: id, ...values } : null;
-    },
-    async authorizeRequest(id, action, limit, windowMs) {
-      const rateKey = `${PREFIX}:rate:${id}:${action}`;
-      const result = await client.eval(AUTHORIZE_REQUEST, {
-        keys: [sessionKey(id), rateKey],
-        arguments: [String(limit), String(windowMs)],
-      });
-      const status = Number(result[0]);
-      if (status !== 1) return { allowed: false, limited: status === 0, session: null };
-      const fields = result[1];
-      const session = { sessionId: id };
-      for (let index = 0; index < fields.length; index += 2) session[fields[index]] = fields[index + 1];
-      return { allowed: true, limited: false, session };
     },
     async touchSession(id) {
       await client.eval(`

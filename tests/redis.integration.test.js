@@ -51,6 +51,10 @@ test('Redis Pub/Sub routes matchmaking across independent coordinator instances'
     [first, second] = await Promise.all([connect(firstServer.address().port), connect(secondServer.address().port)]);
     const firstPeerId = `redis-a-${crypto.randomUUID()}`;
     const secondPeerId = `redis-b-${crypto.randomUUID()}`;
+    await Promise.all([
+      request(first.socket, 'peer.register', { peerId: firstPeerId }),
+      request(second.socket, 'peer.register', { peerId: secondPeerId }),
+    ]);
     assert.equal((await request(first.socket, 'match.search', { peerId: firstPeerId })).type, 'match.queued');
     const routed = receive(first.socket, (payload) => payload.type === 'match.found');
     const assigned = await request(second.socket, 'match.search', { peerId: secondPeerId });

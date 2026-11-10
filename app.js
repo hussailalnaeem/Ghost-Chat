@@ -6,7 +6,6 @@ import {
   validateRoomCode,
 } from './js/room-utils.js';
 import { CoordinatorClient, getCoordinatorUrl } from './js/coordinator-client.js';
-import { recordTiming } from './js/timing.js';
 
 const PEER_OPTS = {
   debug: 0,
@@ -223,8 +222,6 @@ function createReadyPeer(generation) {
       reject(new Error('PeerJS did not load. Check your connection and try again.'));
       return;
     }
-    const peerStartedAt = performance.now();
-    recordTiming('peerjs.initialization.start');
     const peer = new window.Peer(`ghost-${crypto.randomUUID()}`, PEER_OPTS);
     state.peer = peer;
     let opened = false;
@@ -240,7 +237,6 @@ function createReadyPeer(generation) {
       opened = true;
       clearTimeout(timer);
       state.peerId = peerId;
-      recordTiming('peerjs.initialization.open', { durationMs: performance.now() - peerStartedAt });
       resolve(peerId);
     });
     peer.on('connection', handleIncomingConnection);
@@ -254,15 +250,6 @@ function createReadyPeer(generation) {
       }
     });
   });
-}
-
-async function prepareCoordinatorAndPeer(coordinator, generation) {
-  const [, peerId] = await Promise.all([
-    coordinator.connect(),
-    createReadyPeer(generation),
-  ]);
-  recordTiming('flow.connections.ready');
-  return peerId;
 }
 
 async function prepareFreshFlow(action, mode) {
@@ -280,9 +267,6 @@ async function prepareFreshFlow(action, mode) {
 
 async function beginPrivateRoomCreation() {
   if (!['HOME', 'ERROR', 'ENDED', 'CONNECTION_LOST'].includes(state.screen)) return;
-  recordTiming('flow.create.start');
-  refs.creatingTitle.textContent = 'Preparing connection…';
-  refs.creatingMessage.textContent = 'Opening the room service and direct chat connection.';
   state.pendingAction = 'create';
   setScreen('CREATING');
   const generation = await prepareFreshFlow('create', 'private-host');
@@ -290,9 +274,9 @@ async function beginPrivateRoomCreation() {
   setScreen('CREATING');
   try {
     const coordinator = getCoordinator();
-    const peerId = await prepareCoordinatorAndPeer(coordinator, generation);
-    refs.creatingTitle.textContent = 'Creating your room…';
-    refs.creatingMessage.textContent = 'Registering your four-letter room code.';
+    await coordinator.connect();
+    const peerId = await createReadyPeer(generation);
+    await coordinator.request('peer.register', { peerId });
     const result = await coordinator.request('room.create', { peerId });
     if (generation !== state.generation) return;
     state.roomCode = result.roomCode;
@@ -307,9 +291,6 @@ async function beginPrivateRoomCreation() {
 
 async function beginSearchMatching() {
   if (!['HOME', 'ERROR', 'ENDED', 'CONNECTION_LOST'].includes(state.screen)) return;
-  recordTiming('flow.matchmaking.start');
-  refs.searchTitle.textContent = 'Preparing to find a Ghost…';
-  refs.searchMessage.textContent = 'Opening the room service and direct chat connection.';
   state.pendingAction = 'search';
   setScreen('SEARCHING');
   const generation = await prepareFreshFlow('search', 'matchmaking');
@@ -317,9 +298,9 @@ async function beginSearchMatching() {
   setScreen('SEARCHING');
   try {
     const coordinator = getCoordinator();
-    const peerId = await prepareCoordinatorAndPeer(coordinator, generation);
-    refs.searchTitle.textContent = 'Finding a Ghost…';
-    refs.searchMessage.textContent = 'Searching the queue for another available Ghost.';
+    await coordinator.connect();
+    const peerId = await createReadyPeer(generation);
+    await coordinator.request('peer.register', { peerId });
     const result = await coordinator.request('match.search', { peerId });
     if (generation !== state.generation) return;
     if (result.type === 'match.found') handleMatchFound(result);
@@ -331,7 +312,6 @@ async function beginSearchMatching() {
 
 async function beginGuestJoin(rawInput, invitationToken = '') {
   if (!['HOME', 'ERROR', 'ENDED', 'CONNECTION_LOST'].includes(state.screen)) return;
-  recordTiming('flow.join.start');
   const rawCode = normalizeRoomInput(rawInput ?? refs.joinCodeInput.value);
   const validationError = validateRoomCode(rawCode);
   if (validationError) {
@@ -341,8 +321,6 @@ async function beginGuestJoin(rawInput, invitationToken = '') {
 
   refs.joinError.textContent = '';
   state.pendingAction = 'join';
-  refs.joinTitle.textContent = 'Preparing to join…';
-  refs.joinMessage.textContent = 'Checking the room and preparing a direct connection.';
   const generation = await prepareFreshFlow('join', 'private-guest');
   if (!generation) return;
   state.roomCode = rawCode;
@@ -350,9 +328,9 @@ async function beginGuestJoin(rawInput, invitationToken = '') {
   setScreen('JOINING');
   try {
     const coordinator = getCoordinator();
-    const peerId = await prepareCoordinatorAndPeer(coordinator, generation);
-    refs.joinTitle.textContent = 'Connecting…';
-    refs.joinMessage.textContent = 'Sending your room request.';
+    await coordinator.connect();
+    const peerId = await createReadyPeer(generation);
+    await coordinator.request('peer.register', { peerId });
     const result = await coordinator.request('room.join.request', { roomCode: rawCode, peerId, invitationToken });
     if (generation !== state.generation) return;
     if (result.type === 'room.join.authorized') {
@@ -360,8 +338,7 @@ async function beginGuestJoin(rawInput, invitationToken = '') {
       return;
     }
     state.pendingJoinRequestId = result.joinRequestId;
-    refs.joinTitle.textContent = 'Waiting for host approval…';
-    refs.joinMessage.textContent = 'The host will connect you after approving your request.';
+    showToast('Waiting for host approval…');
     state.requestTimer = setTimeout(() => {
       if (generation === state.generation && state.screen === 'JOINING') setError('Request expired. Please try again.');
     }, 30_000);
@@ -372,7 +349,6 @@ async function beginGuestJoin(rawInput, invitationToken = '') {
 
 function handleJoinPending(payload) {
   if (!rememberEvent(payload)) return;
-  recordTiming('room.join.pending.received');
   if (state.mode !== 'private-host' || state.screen !== 'WAITING' || payload.roomCode !== state.roomCode) {
     const coordinator = state.coordinator;
     if (coordinator) void coordinator.request('room.join.decline', { roomCode: payload.roomCode, joinRequestId: payload.joinRequestId }).catch(() => {});
@@ -393,7 +369,6 @@ async function acceptJoinRequest() {
     return;
   }
   refs.acceptJoinBtn.disabled = true;
-  recordTiming('room.join.approval.start');
   try {
     const result = await state.coordinator.request('room.join.accept', { roomCode, joinRequestId });
     state.expectedPeerId = result.guestPeerId;
@@ -434,7 +409,6 @@ function handleJoinAuthorized(payload) {
     state.expectedPeerId = payload.guestPeerId;
     state.authorization = payload.authorization;
     state.connectionContext = { type: 'room', id: payload.roomId };
-    recordTiming('room.join.authorized.host');
     setScreen('HANDSHAKING');
     startConnectionTimeout('The guest could not connect. The room is still available.');
     claimPendingConnections();
@@ -447,7 +421,6 @@ function handleJoinAuthorized(payload) {
   state.expectedPeerId = payload.hostPeerId;
   state.authorization = payload.authorization;
   state.connectionContext = { type: 'room', id: payload.roomId };
-  recordTiming('room.join.authorized.guest');
   claimPendingConnections();
   setScreen('HANDSHAKING');
   startConnectionTimeout('The host could not be reached. Please try again.');
@@ -481,7 +454,6 @@ function handleMatchFound(payload) {
   state.expectedPeerId = payload.remotePeerId;
   state.authorization = payload.authorization;
   state.connectionContext = { type: 'match', id: payload.matchId };
-  recordTiming('match.found', { role: payload.role });
   claimPendingConnections();
   setScreen('HANDSHAKING');
   startConnectionTimeout('The match could not connect. Search again to find another Ghost.');
@@ -559,14 +531,12 @@ function bindPeerConnection(connection) {
   state.conn = connection;
   connection.on('open', () => {
     if (state.conn !== connection || !state.peer) return;
-    recordTiming('webrtc.data-channel.open');
     connection.send({
       type: 'handshake',
       contextId: state.connectionContext.id,
       authorization: state.authorization,
       peerId: state.peer.id,
     });
-    recordTiming('application.handshake.sent');
     state.handshakeSent = true;
     if (state.handshakeReceived) markConnected();
   });
@@ -599,7 +569,6 @@ function handlePeerData(payload) {
       return;
     }
     state.handshakeReceived = true;
-    recordTiming('application.handshake.received');
     if (state.handshakeSent) markConnected();
     return;
   }
@@ -626,7 +595,6 @@ function markConnected() {
   if (state.screen !== 'HANDSHAKING' || !state.handshakeSent || !state.handshakeReceived) return;
   clearTimeout(state.connectionTimer);
   state.connectionTimer = null;
-  recordTiming('application.handshake.complete');
   setScreen('CONNECTED');
   refs.statusLabel.textContent = 'Connected';
   refs.msgInput.focus();
@@ -904,7 +872,6 @@ function bindEvents() {
 function boot() {
   const ids = [
     'findGhostBtn', 'createRoomBtn', 'joinCodeInput', 'joinBtn', 'joinError', 'roomCodeValue',
-    'creatingTitle', 'creatingMessage', 'searchTitle', 'searchMessage', 'joinTitle', 'joinMessage',
     'copyCodeBtn', 'copyLinkBtn', 'shareLinkBtn', 'waitingLeaveBtn', 'cancelJoinBtn', 'cancelSearchBtn',
     'msgInput', 'sendBtn', 'chatMessages', 'typingIndicator', 'endChatBtn', 'nextGhostBtn', 'reportBtn', 'statusDot', 'statusLabel',
     'newChatFromLostBtn', 'homeFromLostBtn', 'startNewChatBtn', 'homeFromEndedBtn', 'errorMessage',
